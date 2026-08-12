@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-jlz-minimax-h3"
 description = "JLZ MiniMax H3 nodes for ComfyUI: reference-to-video conditioning, one-click comic creation tools and llama-cpp model loader (V1 + V3 hybrid)."
-version = "0.4.0"
+version = "0.4.1"
 license = { file = "LICENSE" }
 dependencies = []
 requires-python = ">=3.10"
@@ -14,5 +14,5 @@ Documentation = "https://github.com/wjluoxiao/ComfyUI-JLZ-MiniMax-H3#readme"
 [tool.comfy]
 PublisherId = "wjluoxiao"
 DisplayName = "ComfyUI-JLZ-MiniMax-H3"
-Icon = ""
+Icon = "icon.png"
 web = "js"
