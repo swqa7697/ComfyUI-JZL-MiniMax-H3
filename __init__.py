@@ -17,6 +17,11 @@ from .story_nodes import (
     JLZ_MiniMax_VideoDispatcher,
     JLZ_MiniMax_AudioDispatcher,
 )
+from .nodes_llama import (
+    JLZ_LlamaModelLoaderPro,
+    JLZ_MiniMax_ScriptWriter,
+    JLZ_MiniMax_PromptGenerator,
+)
 
 WEB_DIRECTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "js")
 
@@ -26,6 +31,9 @@ NODE_CLASS_MAPPINGS = {
     "JLZ_MiniMax_SceneDispatcher": JLZ_MiniMax_SceneDispatcher,
     "JLZ_MiniMax_VideoDispatcher": JLZ_MiniMax_VideoDispatcher,
     "JLZ_MiniMax_AudioDispatcher": JLZ_MiniMax_AudioDispatcher,
+    "JLZ_LlamaModelLoaderPro": JLZ_LlamaModelLoaderPro,
+    "JLZ_MiniMax_ScriptWriter": JLZ_MiniMax_ScriptWriter,
+    "JLZ_MiniMax_PromptGenerator": JLZ_MiniMax_PromptGenerator,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -34,6 +42,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JLZ_MiniMax_SceneDispatcher": "JLZ - 🎯 场景元素调度",
     "JLZ_MiniMax_VideoDispatcher": "JLZ - 🎬 视频调度",
     "JLZ_MiniMax_AudioDispatcher": "JLZ - 🎧 音频调度",
+    "JLZ_LlamaModelLoaderPro": "JLZ - 🚀 模型加载器Pro",
+    "JLZ_MiniMax_ScriptWriter": "JLZ - 🎬 剧本编剧",
+    "JLZ_MiniMax_PromptGenerator": "JLZ - ✍️ 分镜词生成器",
 }
 
 
