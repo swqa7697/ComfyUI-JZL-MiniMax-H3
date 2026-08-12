@@ -1,4 +1,4 @@
-"""JLZ MiniMax — Llama 模型加载器 + 编剧链节点（V1 经典 API）
+"""JZL MiniMax — Llama 模型加载器 + 编剧链节点（V1 经典 API）
 
 漫剧创作链的前半段：
   剧本编剧 → 分镜词生成器 → （story_nodes.py 的分镜处理中心/调度）
@@ -62,7 +62,7 @@ def _find_latest_version(base_dir):
 #  节点 1: Llama 模型加载器 Pro
 # ═══════════════════════════════════════════════════════════════
 
-class JLZ_LlamaModelLoaderPro:
+class JZL_LlamaModelLoaderPro:
     """Llama 模型加载器 Pro — 合并模型选择与推理参数，支持折叠高级选项"""
 
     @classmethod
@@ -120,7 +120,7 @@ class JLZ_LlamaModelLoaderPro:
     RETURN_TYPES = ("LLAMACPPMODEL", "LLAMACPPARAMS")
     RETURN_NAMES = ("llama_model", "parameters")
     FUNCTION = "loadmodel"
-    CATEGORY = "JLZ/MiniMax"
+    CATEGORY = "JZL/MiniMax"
 
     def loadmodel(self, model, mmproj, chat_handler, advanced_settings,
                   n_ctx, vram_limit, image_min_tokens, image_max_tokens,
@@ -154,7 +154,7 @@ class JLZ_LlamaModelLoaderPro:
         }
 
         if not LLAMA_CPP_STORAGE.llm or LLAMA_CPP_STORAGE.current_config != custom_config:
-            print("[JLZ-llama] 开始加载模型...")
+            print("[JZL-llama] 开始加载模型...")
             LLAMA_CPP_STORAGE.load_model(custom_config)
 
         return (custom_config, parameters)
@@ -164,7 +164,7 @@ class JLZ_LlamaModelLoaderPro:
 #  节点 2: 剧本编剧 (总线生产者)
 # ═══════════════════════════════════════════════════════════════
 
-class JLZ_MiniMax_ScriptWriter:
+class JZL_MiniMax_ScriptWriter:
     @classmethod
     def INPUT_TYPES(cls):
         from .presets.script import STORY_STYLES, SHOT_COUNT_OPTIONS
@@ -195,7 +195,7 @@ class JLZ_MiniMax_ScriptWriter:
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("参数总线", "剧本输出")
     FUNCTION = "execute"
-    CATEGORY = "JLZ/MiniMax"
+    CATEGORY = "JZL/MiniMax"
 
     def execute(self, mode, story_name, story_input, story_style, shot_length,
                 seed, force_offload, save_states,
@@ -243,7 +243,7 @@ class JLZ_MiniMax_ScriptWriter:
 #  节点 3: 分镜词生成器 (批量)
 # ═══════════════════════════════════════════════════════════════
 
-class JLZ_MiniMax_PromptGenerator:
+class JZL_MiniMax_PromptGenerator:
     """批量生成全部镜头的 H3 提示词 → 保存 TXT"""
 
     @classmethod
@@ -261,7 +261,7 @@ class JLZ_MiniMax_PromptGenerator:
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("参数总线", "剧本输入")
     FUNCTION = "execute"
-    CATEGORY = "JLZ/MiniMax"
+    CATEGORY = "JZL/MiniMax"
 
     def execute(self, bus, shot_text, seed, force_offload, save_states):
         from .presets.prompt import build_prompt_system
@@ -340,7 +340,7 @@ class JLZ_MiniMax_PromptGenerator:
         return (new_bus, shot_text)
 
 
-class JLZ_MiniMaxPreset:
+class JZL_MiniMaxPreset:
     """MiniMax H3 提示词预设 — T2VA/I2VA/FL2VA/L2VA + 动态参数注入"""
 
     _STYLES = [
@@ -523,7 +523,7 @@ class JLZ_MiniMaxPreset:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("system_prompt",)
     FUNCTION = "build"
-    CATEGORY = "JLZ/MiniMax"
+    CATEGORY = "JZL/MiniMax"
 
     def build(self, 预设模式, 视频时长, 视觉风格, 音乐风格, 画面比例, 切镜次数):
         preset = 预设模式
@@ -616,7 +616,7 @@ class JLZ_MiniMaxPreset:
         return (result,)
 
 
-class JLZ_MiniMaxRef2vaPreset:
+class JZL_MiniMaxRef2vaPreset:
     """MiniMax H3 Ref2VA 全引用模式专用 — 多模态参考 + 风格策略"""
 
     _STYLES = [
@@ -631,11 +631,11 @@ class JLZ_MiniMaxRef2vaPreset:
         "多种风格转换 / Style Transformation": "STYLE TRANSFORMATION — the ENTIRE frame undergoes a smooth, visible transition from one visual style to another over the course of the video. Examples: live-action gradually becomes 2D-animated; claymation transforms into origami; watercolor washes over a realistic scene. ALL shapes, proportions, and spatial relationships must be preserved during the transformation — only the rendering style changes. The transformation must be smooth and continuous, not an abrupt switch.",
     }
 
-    _CUTS = JLZ_MiniMaxPreset._CUTS
-    _MUSIC = JLZ_MiniMaxPreset._MUSIC
-    _MUSIC_HINTS = JLZ_MiniMaxPreset._MUSIC_HINTS
-    _ASPECTS = JLZ_MiniMaxPreset._ASPECTS
-    _ASPECT_HINTS = JLZ_MiniMaxPreset._ASPECT_HINTS
+    _CUTS = JZL_MiniMaxPreset._CUTS
+    _MUSIC = JZL_MiniMaxPreset._MUSIC
+    _MUSIC_HINTS = JZL_MiniMaxPreset._MUSIC_HINTS
+    _ASPECTS = JZL_MiniMaxPreset._ASPECTS
+    _ASPECT_HINTS = JZL_MiniMaxPreset._ASPECT_HINTS
 
     @classmethod
     def INPUT_TYPES(s):
@@ -663,7 +663,7 @@ class JLZ_MiniMaxRef2vaPreset:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("system_prompt",)
     FUNCTION = "build"
-    CATEGORY = "JLZ/MiniMax"
+    CATEGORY = "JZL/MiniMax"
 
     def build(self, 预设模式, 参考图片介绍, 参考视频介绍, 参考音频介绍, 视频时长, 视觉风格, 音乐风格, 画面比例, 切镜次数):
         preset = 预设模式

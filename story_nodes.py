@@ -1,13 +1,13 @@
-"""JLZ MiniMax 一键漫剧创作 — 节点定义（V1 经典 API）
+"""JZL MiniMax 一键漫剧创作 — 节点定义（V1 经典 API）
 
 总线信号链: 剧本编剧 → 分镜词生成器 → 分镜处理中心
 调度分支: 分镜处理中心 → 场景元素调度 / 视频调度 / 音频调度
 
 本文件包含 4 个纯逻辑节点（不依赖 llama-cpp）：
-  1. JLZ_MiniMax_ShotFormatter    分镜处理中心
-  2. JLZ_MiniMax_SceneDispatcher  场景元素调度
-  3. JLZ_MiniMax_VideoDispatcher  视频调度
-  4. JLZ_MiniMax_AudioDispatcher  音频调度
+  1. JZL_MiniMax_ShotFormatter    分镜处理中心
+  2. JZL_MiniMax_SceneDispatcher  场景元素调度
+  3. JZL_MiniMax_VideoDispatcher  视频调度
+  4. JZL_MiniMax_AudioDispatcher  音频调度
 
 输出目录: {ComfyUI output}/jzl/{story_name}/{子目录}/
 """
@@ -81,7 +81,7 @@ def _parse_three_in_one(content):
 #  节点 1: 分镜处理中心
 # ═══════════════════════════════════════════════════════════════
 
-class JLZ_MiniMax_ShotFormatter:
+class JZL_MiniMax_ShotFormatter:
     """本地文件为主数据通道, 重拍模式直接读选中文件"""
 
     @classmethod
@@ -101,7 +101,7 @@ class JLZ_MiniMax_ShotFormatter:
     RETURN_NAMES = ("H3提示词", "场景调度指令", "视频调度", "音频调度")
     OUTPUT_IS_LIST = (True, True, True, True)
     FUNCTION = "execute"
-    CATEGORY = "JLZ/MiniMax"
+    CATEGORY = "JZL/MiniMax"
 
     @staticmethod
     def _parse_shots(text):
@@ -187,7 +187,7 @@ class JLZ_MiniMax_ShotFormatter:
 #  节点 2: 场景元素调度（按上游节点名自动分类）
 # ═══════════════════════════════════════════════════════════════
 
-class JLZ_MiniMax_SceneDispatcher:
+class JZL_MiniMax_SceneDispatcher:
     """动态 IMAGE 输入，根据上游节点名称自动分类 角色/背景/道具，分配到 9 个 ref_image 槽位。"""
 
     _KW_CHARACTER = ["角色", "人物", "主角", "反派", "配角"]
@@ -199,9 +199,9 @@ class JLZ_MiniMax_SceneDispatcher:
         try:
             from .sheding.dispatcher_rules import KW_CHARACTER, KW_BACKGROUND, KW_PROP
         except ImportError:
-            KW_CHARACTER = JLZ_MiniMax_SceneDispatcher._KW_CHARACTER
-            KW_BACKGROUND = JLZ_MiniMax_SceneDispatcher._KW_BACKGROUND
-            KW_PROP = JLZ_MiniMax_SceneDispatcher._KW_PROP
+            KW_CHARACTER = JZL_MiniMax_SceneDispatcher._KW_CHARACTER
+            KW_BACKGROUND = JZL_MiniMax_SceneDispatcher._KW_BACKGROUND
+            KW_PROP = JZL_MiniMax_SceneDispatcher._KW_PROP
         n = name.lower()
         for kw in KW_CHARACTER:
             if kw.lower() in n:
@@ -221,7 +221,7 @@ class JLZ_MiniMax_SceneDispatcher:
     RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE")
     RETURN_NAMES = ("ref_image_0", "ref_image_1", "ref_image_2", "ref_image_3", "ref_image_4", "ref_image_5", "ref_image_6", "ref_image_7", "ref_image_8")
     FUNCTION = "execute"
-    CATEGORY = "JLZ/MiniMax"
+    CATEGORY = "JZL/MiniMax"
 
     def execute(self, scene_instruction, **kwargs):
         needed_chars, needed_bg, needed_props = [], "", []
@@ -291,7 +291,7 @@ class JLZ_MiniMax_SceneDispatcher:
 #  节点 3: 视频调度 (固定9组)
 # ═══════════════════════════════════════════════════════════════
 
-class JLZ_MiniMax_VideoDispatcher:
+class JZL_MiniMax_VideoDispatcher:
     """固定 9 组视频 + 配对音频，交叉输出 3 组 ref_video / ref_video_audio"""
 
     @classmethod
@@ -305,7 +305,7 @@ class JLZ_MiniMax_VideoDispatcher:
     RETURN_TYPES = ("IMAGE", "*", "IMAGE", "*", "IMAGE", "*")
     RETURN_NAMES = ("ref_video_0", "ref_video_audio_0", "ref_video_1", "ref_video_audio_1", "ref_video_2", "ref_video_audio_2")
     FUNCTION = "execute"
-    CATEGORY = "JLZ/MiniMax"
+    CATEGORY = "JZL/MiniMax"
 
     def execute(self, va_instruction, **kwargs):
         needed_action = ""
@@ -357,7 +357,7 @@ class JLZ_MiniMax_VideoDispatcher:
 #  节点 4: 音频调度 (动态)
 # ═══════════════════════════════════════════════════════════════
 
-class JLZ_MiniMax_AudioDispatcher:
+class JZL_MiniMax_AudioDispatcher:
     """动态音频接入, 仅接受 AUDIO 类型, 最多 3 条 ref_audio"""
 
     @classmethod
@@ -367,7 +367,7 @@ class JLZ_MiniMax_AudioDispatcher:
     RETURN_TYPES = ("*", "*", "*")
     RETURN_NAMES = ("ref_audio_0", "ref_audio_1", "ref_audio_2")
     FUNCTION = "execute"
-    CATEGORY = "JLZ/MiniMax"
+    CATEGORY = "JZL/MiniMax"
 
     def execute(self, va_instruction, **kwargs):
         audios = {}

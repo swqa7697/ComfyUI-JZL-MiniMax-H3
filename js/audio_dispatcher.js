@@ -3,7 +3,7 @@
  */
 import { app } from "../../scripts/app.js";
 
-const NODE_TYPE = "JLZ_MiniMax_AudioDispatcher";
+const NODE_TYPE = "JZL_MiniMax_AudioDispatcher";
 
 function getUpstreamNode(self, inputIndex) {
     const graph = self.graph;
@@ -30,7 +30,7 @@ function getUpstreamNode(self, inputIndex) {
 }
 
 app.registerExtension({
-    name: "JLZ.MiniMaxAudioDispatcher",
+    name: "JZL.MiniMaxAudioDispatcher",
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData?.name !== NODE_TYPE) return;
         const orig = nodeType.prototype.onNodeCreated;

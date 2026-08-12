@@ -7,7 +7,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
-const NODE_TYPE = "JLZ_MiniMax_ShotFormatter";
+const NODE_TYPE = "JZL_MiniMax_ShotFormatter";
 const MODE_ACTIVE = 0;
 const MODE_MUTE = 2;
 
@@ -47,7 +47,7 @@ function muteUpstream(node, reshootMode) {
 }
 
 app.registerExtension({
-    name: "JLZ.MiniMaxShotFormatter",
+    name: "JZL.MiniMaxShotFormatter",
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData?.name !== NODE_TYPE) return;
         const orig = nodeType.prototype.onNodeCreated;
@@ -72,12 +72,12 @@ app.registerExtension({
                     // 从 Python 后端获取默认目录
                     let defaultDir = "";
                     try {
-                        const resp = await api.fetchApi("/jlz/minimax_default_dir", { method: "POST" });
+                        const resp = await api.fetchApi("/jzl/minimax_default_dir", { method: "POST" });
                         const data = await resp.json();
                         defaultDir = data.dir || "";
                     } catch (e) {}
 
-                    api.fetchApi("/jlz/choose_txt_file", {
+                    api.fetchApi("/jzl/choose_txt_file", {
                         method: "POST",
                         body: JSON.stringify({ default_dir: defaultDir }),
                         headers: { "Content-Type": "application/json" }

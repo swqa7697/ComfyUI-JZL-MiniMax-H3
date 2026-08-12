@@ -1,4 +1,4 @@
-"""JLZ MiniMax — Llama 后端支撑（模型加载存储 + GPU 检测）
+"""JZL MiniMax — Llama 后端支撑（模型加载存储 + GPU 检测）
 
 从 XB_ToolBox 的 nodes_llama.py 抽取，供「模型加载器 Pro」与「编剧链」独立使用，
 不依赖 XB_ToolBox。两个包的 LLAMA_CPP_STORAGE 相互独立，互不干扰。
@@ -119,7 +119,7 @@ def print_gpu_info():
     arch = get_amd_arch() if is_rocm() else ""
     factor = get_vram_factor()
     arch_str = f", arch={arch}" if arch else ""
-    print(f"[JLZ-llama] GPU 检测: {gpu_type}, {gpu_name}, VRAM={vram:.1f}GB{arch_str}, factor={factor}")
+    print(f"[JZL-llama] GPU 检测: {gpu_type}, {gpu_name}, VRAM={vram:.1f}GB{arch_str}, factor={factor}")
 
 
 # =============================================================================
@@ -348,7 +348,7 @@ class LLAMA_CPP_STORAGE:
                 mmproj_size = os.path.getsize(mmproj_path) * vram_factor / (1024 ** 3)
                 n_gpu_layers = max(1, int((vram_limit - mmproj_size) / gguf_layer_size))
 
-            print(f"[JLZ-llama] 加载视觉模块: {mmproj}")
+            print(f"[JZL-llama] 加载视觉模块: {mmproj}")
 
             think_mode = "Thinking" in chat_handler
             kwargs = {"clip_model_path": mmproj_path, "verbose": False}
@@ -380,8 +380,8 @@ class LLAMA_CPP_STORAGE:
             else:
                 cls.chat_handler = None
 
-        print(f"[JLZ-llama] 加载模型: {model}")
-        print(f"[JLZ-llama] n_gpu_layers = {n_gpu_layers} (0=仅CPU, -1=全部GPU)")
+        print(f"[JZL-llama] 加载模型: {model}")
+        print(f"[JZL-llama] n_gpu_layers = {n_gpu_layers} (0=仅CPU, -1=全部GPU)")
         cls.llm = Llama(
             model_path,
             chat_handler=cls.chat_handler,
@@ -403,7 +403,7 @@ if not hasattr(mm, "unload_all_models_backup"):
         return result
 
     mm.unload_all_models = patched_unload_all_models
-    print("[JLZ-llama] 模型卸载钩子已注册!")
+    print("[JZL-llama] 模型卸载钩子已注册!")
 
 # LLM 模型文件夹注册
 llm_extensions = ['.ckpt', '.pt', '.bin', '.pth', '.safetensors', '.gguf']

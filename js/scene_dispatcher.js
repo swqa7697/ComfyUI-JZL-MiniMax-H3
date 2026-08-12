@@ -9,7 +9,7 @@
 import { app } from "../../scripts/app.js";
 import { ComfyWidgets } from "../../scripts/widgets.js";
 
-const NODE_TYPE = "JLZ_MiniMax_SceneDispatcher";
+const NODE_TYPE = "JZL_MiniMax_SceneDispatcher";
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -40,7 +40,7 @@ function getUpstreamNode(self, inputIndex) {
 // ── extension ──────────────────────────────────────────────────────────
 
 app.registerExtension({
-    name: "JLZ.MiniMaxSceneDispatcher",
+    name: "JZL.MiniMaxSceneDispatcher",
 
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData?.name !== NODE_TYPE) return;

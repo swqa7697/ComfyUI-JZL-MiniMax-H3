@@ -1,4 +1,4 @@
-"""JLZ MiniMax H3 节点实现。
+"""JZL MiniMax H3 节点实现。
 
 Reference to Video (ref2va) — 100% 复刻官方 MiniMaxH3ReferenceToVideo，
 并新增「参考值放大」选项（仅 match 模式，面积倍率）。
@@ -72,7 +72,7 @@ def _empty_av_latent(width, height, length, batch_size=1):
     return {"samples": comfy.nested_tensor.NestedTensor((video, audio))}, frame_count
 
 
-class JLZ_MiniMaxH3ReferenceToVideo(io.ComfyNode):
+class JZL_MiniMaxH3ReferenceToVideo(io.ComfyNode):
     """ref2va: prompt + reference images / videos / audio -> conditioning + AV latent.
 
     参考物按固定顺序进入呈现：图像 → 视频（每个视频音轨的 <Audio j> 标签紧挨在其
@@ -83,10 +83,10 @@ class JLZ_MiniMaxH3ReferenceToVideo(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(
-            node_id="JLZ_MiniMaxH3ReferenceToVideo",
+            node_id="JZL_MiniMaxH3ReferenceToVideo",
             description="<Picture i> / <Video k> / <Audio j> 参考条件编码（MiniMax H3 ref2va）。提示词中使用相同标签引用。",
-            display_name="JLZ - 🎬 MiniMax H3 参考编码",
-            category="JLZ/MiniMax",
+            display_name="JZL - 🎬 MiniMax H3 参考编码",
+            category="JZL/MiniMax",
             inputs=[
                 io.Clip.Input("clip"),
                 io.Vae.Input("vae"),
@@ -144,7 +144,7 @@ class JLZ_MiniMaxH3ReferenceToVideo(io.ComfyNode):
             h, w = img.shape[1], img.shape[2]
             if ref_image_size == "match":
                 # aspect-preserving scale (down only) to the generation's pixel area
-                # JLZ 扩展：面积倍率 ref_scale（默认 1.0 = 官方行为）
+                # JZL 扩展：面积倍率 ref_scale（默认 1.0 = 官方行为）
                 scale = min(1.0, math.sqrt(ref_scale * (width * height) / (w * h)))
             else:
                 scale = min(1.0, REF_IMAGE_SHORT_EDGE / min(w, h))
