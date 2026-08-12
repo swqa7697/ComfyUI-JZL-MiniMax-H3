@@ -1,6 +1,6 @@
 # 发布 / 同步规范
 
-本文件规定 **ComfyUI-JLZ-MiniMax-H3** 仓库哪些文件必须上传、哪些禁止上传，以及发布到 ComfyUI Registry 的流程。
+本文件规定 **ComfyUI-JZL-MiniMax-H3** 仓库哪些文件必须上传、哪些禁止上传，以及发布到 ComfyUI Registry 的流程。
 
 ## 一、必须上传（白名单）
 

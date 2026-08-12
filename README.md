@@ -1,4 +1,4 @@
-# ComfyUI-JLZ-MiniMax-H3
+# ComfyUI-JZL-MiniMax-H3
 
 MiniMax H3 视频生成节点（基于 ComfyUI V3 `io.Schema` 机制）。
 
@@ -6,12 +6,12 @@ MiniMax H3 视频生成节点（基于 ComfyUI V3 `io.Schema` 机制）。
 
 | 节点 | node_id | 说明 |
 |------|---------|------|
-| 🎬 MiniMax H3 参考编码 | `JLZ_MiniMaxH3ReferenceToVideo` | ref2va 参考条件编码，100% 复刻官方 `MiniMaxH3ReferenceToVideo` |
+| 🎬 MiniMax H3 参考编码 | `JZL_MiniMaxH3ReferenceToVideo` | ref2va 参考条件编码，100% 复刻官方 `MiniMaxH3ReferenceToVideo` |
 
 ## 特性
 
 - **V3 原生动态接口**：参考图 / 参考视频 / 视频音轨 / 独立音频 四组端口用 `io.Autogrow` 实现「连接后自动长出下一个空槽」，与官方一致。
-- **参考值放大**（JLZ 扩展）：仅 `match` 模式生效，`ref_scale` 范围 `1.0~5.0`，步长 `0.1`。最终像素面积 = 生成画布面积 × 倍率（面积倍率，非分辨率倍率）。`1.0` = 官方行为。
+- **参考值放大**（JZL 扩展）：仅 `match` 模式生效，`ref_scale` 范围 `1.0~5.0`，步长 `0.1`。最终像素面积 = 生成画布面积 × 倍率（面积倍率，非分辨率倍率）。`1.0` = 官方行为。
 
 ## 提示词标签
 
@@ -26,7 +26,7 @@ MiniMax H3 视频生成节点（基于 ComfyUI V3 `io.Schema` 机制）。
 把本目录放入 ComfyUI 的 `custom_nodes/` 下，或建立符号链接：
 
 ```powershell
-New-Item -ItemType Junction -Path "D:\...\ComfyUI\custom_nodes\ComfyUI-JLZ-MiniMax-H3" -Target "D:\AI_JZL\ComfyUI-JLZ-MiniMax-H3"
+New-Item -ItemType Junction -Path "D:\...\ComfyUI\custom_nodes\ComfyUI-JZL-MiniMax-H3" -Target "D:\AI_JZL\ComfyUI-JZL-MiniMax-H3"
 ```
 
 ## 依赖

@@ -1,4 +1,4 @@
-# JLZ MiniMax H3 节点依赖
+# JZL MiniMax H3 节点依赖
 # =======================
 
 # llama-cpp-python（LLM/VLM 本地推理，模型加载器 Pro 必需）
