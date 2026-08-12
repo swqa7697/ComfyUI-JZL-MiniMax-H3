@@ -288,19 +288,16 @@ class JZL_MiniMax_SceneDispatcher:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  节点 3: 视频调度 (固定9组)
+#  节点 3: 视频调度 (动态端口 + 配对音频)
 # ═══════════════════════════════════════════════════════════════
 
 class JZL_MiniMax_VideoDispatcher:
-    """固定 9 组视频 + 配对音频，交叉输出 3 组 ref_video / ref_video_audio"""
+    """动态视频端口（IMAGE），接入视频后自动配对一个「上游名（音频）」音频端口。
+    交叉输出 3 组 ref_video / ref_video_audio。"""
 
     @classmethod
     def INPUT_TYPES(cls):
-        opt = {}
-        for c in "ABCDEFGHI":
-            opt[f"视频{c}"] = ("IMAGE",)
-            opt[f"视频{c}（音频）"] = ("*",)
-        return {"required": {"va_instruction": ("*", {"force_input": True})}, "optional": opt}
+        return {"required": {"va_instruction": ("*", {"force_input": True})}, "optional": _FlexibleInputType("IMAGE")}
 
     RETURN_TYPES = ("IMAGE", "*", "IMAGE", "*", "IMAGE", "*")
     RETURN_NAMES = ("ref_video_0", "ref_video_audio_0", "ref_video_1", "ref_video_audio_1", "ref_video_2", "ref_video_audio_2")

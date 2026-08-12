@@ -1,0 +1,178 @@
+{
+  "JZL_MiniMaxH3ReferenceToVideo": {
+    "display_name": "JZL - 🎬 MiniMax H3 参考编码",
+    "inputs": {
+      "clip": { "name": "CLIP文本编码器" },
+      "vae": { "name": "VAE" },
+      "audio_vae": { "name": "音频VAE" },
+      "prompt": { "name": "提示词" },
+      "width": { "name": "宽度" },
+      "height": { "name": "高度" },
+      "length": { "name": "时长(帧)" },
+      "ref_image_size": { "name": "参考图尺寸" },
+      "ref_scale": { "name": "参考值放大" },
+      "ref_image": { "name": "参考图" },
+      "ref_video": { "name": "参考视频" },
+      "ref_video_audio": { "name": "视频音轨" },
+      "ref_audio": { "name": "参考音频" }
+    },
+    "outputs": {
+      "0": { "name": "正向条件" },
+      "1": { "name": "潜空间" }
+    }
+  },
+  "JZL_MiniMax_ShotFormatter": {
+    "display_name": "JZL - 📋 分镜处理中心",
+    "inputs": {
+      "reshoot_mode": { "name": "🔄 重拍模式" },
+      "bus": { "name": "🔗 参数总线" },
+      "shot_text": { "name": "📝 分镜文本" },
+      "_reshoot_path": { "name": "重拍文件路径" }
+    },
+    "outputs": {
+      "0": { "name": "✍️ H3提示词" },
+      "1": { "name": "🎯 场景调度指令" },
+      "2": { "name": "🎬 视频调度" },
+      "3": { "name": "🎧 音频调度" }
+    }
+  },
+  "JZL_MiniMax_SceneDispatcher": {
+    "display_name": "JZL - 🎯 场景元素调度",
+    "inputs": {
+      "scene_instruction": { "name": "🎯 场景调度指令" }
+    },
+    "outputs": {
+      "0": { "name": "🖼️ ref_image_0" },
+      "1": { "name": "🖼️ ref_image_1" },
+      "2": { "name": "🖼️ ref_image_2" },
+      "3": { "name": "🖼️ ref_image_3" },
+      "4": { "name": "🖼️ ref_image_4" },
+      "5": { "name": "🖼️ ref_image_5" },
+      "6": { "name": "🖼️ ref_image_6" },
+      "7": { "name": "🖼️ ref_image_7" },
+      "8": { "name": "🖼️ ref_image_8" }
+    }
+  },
+  "JZL_MiniMax_VideoDispatcher": {
+    "display_name": "JZL - 🎬 视频调度",
+    "inputs": {
+      "va_instruction": { "name": "🎬🎧 视频音频指令" }
+    },
+    "outputs": {
+      "0": { "name": "🎬 ref_video_0" },
+      "1": { "name": "🎧 ref_video_audio_0" },
+      "2": { "name": "🎬 ref_video_1" },
+      "3": { "name": "🎧 ref_video_audio_1" },
+      "4": { "name": "🎬 ref_video_2" },
+      "5": { "name": "🎧 ref_video_audio_2" }
+    }
+  },
+  "JZL_MiniMax_AudioDispatcher": {
+    "display_name": "JZL - 🎧 音频调度",
+    "inputs": {
+      "va_instruction": { "name": "🎬🎧 视频音频指令" }
+    },
+    "outputs": {
+      "0": { "name": "🔊 ref_audio_0" },
+      "1": { "name": "🔊 ref_audio_1" },
+      "2": { "name": "🔊 ref_audio_2" }
+    }
+  },
+  "JZL_LlamaModelLoaderPro": {
+    "display_name": "JZL - 🚀 模型加载Pro",
+    "inputs": {
+      "model": { "name": "LLM模型" },
+      "mmproj": { "name": "视觉投影(mmproj)" },
+      "chat_handler": { "name": "对话处理器" },
+      "advanced_settings": { "name": "高级参数设置" },
+      "n_ctx": { "name": "上下文长度" },
+      "vram_limit": { "name": "显存上限(GB)" },
+      "image_min_tokens": { "name": "图像最小Token" },
+      "image_max_tokens": { "name": "图像最大Token" },
+      "max_tokens": { "name": "最大Token数" },
+      "top_k": { "name": "Top-K采样" },
+      "top_p": { "name": "Top-P采样" },
+      "min_p": { "name": "Min-P采样" },
+      "typical_p": { "name": "Typical-P采样" },
+      "temperature": { "name": "温度" },
+      "repeat_penalty": { "name": "重复惩罚" },
+      "frequency_penalty": { "name": "频率惩罚" },
+      "present_penalty": { "name": "存在惩罚" },
+      "mirostat_mode": { "name": "Mirostat模式" },
+      "mirostat_eta": { "name": "Mirostat学习率" },
+      "mirostat_tau": { "name": "Mirostat目标熵" },
+      "state_uid": { "name": "状态UID" }
+    },
+    "outputs": {
+      "0": { "name": "🤖 Llama模型" },
+      "1": { "name": "⚙️ 推理参数" }
+    }
+  },
+  "JZL_MiniMax_ScriptWriter": {
+    "display_name": "JZL - 🎬 剧本编剧",
+    "inputs": {
+      "llm_backend": { "name": "🔌 LLM后端" },
+      "mode": { "name": "🎯 运行模式" },
+      "story_style": { "name": "🎨 故事风格" },
+      "story_name": { "name": "📛 故事名称" },
+      "story_input": { "name": "📖 故事内容" },
+      "shot_preference": { "name": "🎭 分镜偏好" },
+      "shot_length": { "name": "🎞️ 镜头数量" },
+      "seed": { "name": "🎲 随机种子" },
+      "force_offload": { "name": "🗑️ 强制卸载" },
+      "save_states": { "name": "💾 保存对话状态" },
+      "llama_model": { "name": "🦙 Llama模型" },
+      "parameters": { "name": "⚙️ 推理参数" },
+      "api_response": { "name": "🌐 API响应" }
+    },
+    "outputs": {
+      "0": { "name": "🔗 参数总线" },
+      "1": { "name": "📜 剧本输出" }
+    }
+  },
+  "JZL_MiniMax_PromptGenerator": {
+    "display_name": "JZL - ✍️ 分镜词生成器",
+    "inputs": {
+      "bus": { "name": "🔗 参数总线" },
+      "shot_text": { "name": "📜 剧本输入" },
+      "seed": { "name": "🎲 随机种子" },
+      "force_offload": { "name": "🗑️ 强制卸载" },
+      "save_states": { "name": "💾 保存对话状态" }
+    },
+    "outputs": {
+      "0": { "name": "🔗 参数总线" },
+      "1": { "name": "📜 剧本输入" }
+    }
+  },
+  "JZL_MiniMaxPreset": {
+    "display_name": "JZL - ✨ MiniMax-fl2va提示词预设",
+    "inputs": {
+      "预设模式": { "name": "预设模式" },
+      "视频时长": { "name": "视频时长(秒)" },
+      "视觉风格": { "name": "视觉风格" },
+      "音乐风格": { "name": "音乐风格" },
+      "画面比例": { "name": "画面比例" },
+      "切镜次数": { "name": "切镜次数" }
+    },
+    "outputs": {
+      "0": { "name": "📝 system_prompt" }
+    }
+  },
+  "JZL_MiniMaxRef2vaPreset": {
+    "display_name": "JZL - ✨ MiniMax-ref2va提示词预设",
+    "inputs": {
+      "预设模式": { "name": "预设模式" },
+      "参考图片介绍": { "name": "参考图片介绍" },
+      "参考视频介绍": { "name": "参考视频介绍" },
+      "参考音频介绍": { "name": "参考音频介绍" },
+      "视频时长": { "name": "视频时长(秒)" },
+      "视觉风格": { "name": "视觉风格" },
+      "音乐风格": { "name": "音乐风格" },
+      "画面比例": { "name": "画面比例" },
+      "切镜次数": { "name": "切镜次数" }
+    },
+    "outputs": {
+      "0": { "name": "📝 system_prompt" }
+    }
+  }
+}

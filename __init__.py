@@ -46,7 +46,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JZL_MiniMax_SceneDispatcher": "JZL - 🎯 场景元素调度",
     "JZL_MiniMax_VideoDispatcher": "JZL - 🎬 视频调度",
     "JZL_MiniMax_AudioDispatcher": "JZL - 🎧 音频调度",
-    "JZL_LlamaModelLoaderPro": "JZL - 🚀 模型加载器Pro",
+    "JZL_LlamaModelLoaderPro": "JZL - 🚀 模型加载Pro",
     "JZL_MiniMax_ScriptWriter": "JZL - 🎬 剧本编剧",
     "JZL_MiniMax_PromptGenerator": "JZL - ✍️ 分镜词生成器",
     "JZL_MiniMaxPreset": "JZL - ✨ MiniMax-fl2va提示词预设",
