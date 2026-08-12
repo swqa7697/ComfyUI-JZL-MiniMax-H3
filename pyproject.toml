@@ -1,0 +1,17 @@
+[project]
+name = "comfyui-jlz-minimax-h3"
+description = "JLZ MiniMax H3 nodes (ref2va reference encoding) for ComfyUI, built on the V3 io.Schema API."
+version = "0.1.0"
+license = { file = "LICENSE" }
+dependencies = []
+requires-python = ">=3.10"
+
+[project.urls]
+Repository = "https://github.com/wjluoxiao/ComfyUI-JLZ-MiniMax-H3"
+Homepage = "https://github.com/wjluoxiao/ComfyUI-JLZ-MiniMax-H3"
+Documentation = "https://github.com/wjluoxiao/ComfyUI-JLZ-MiniMax-H3#readme"
+
+[tool.comfy]
+PublisherId = "wjluoxiao"
+DisplayName = "ComfyUI-JLZ-MiniMax-H3"
+Icon = ""
