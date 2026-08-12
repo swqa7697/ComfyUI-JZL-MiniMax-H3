@@ -71,33 +71,49 @@ function patchInstance(self) {
     self.stabilizeInputsOutputs = function () {
         const inputs = this.inputs || [];
 
-        // ── 1. 视频槽改名 + 配对音频 ──
-        const connectedNames = new Set();
+        // ── 1. 为每个已连接视频槽生成唯一名（同名加 _N 后缀） ──
+        const vIndices = [];
         for (let i = 0; i < inputs.length; i++) {
-            const inp = inputs[i];
-            if (inp.type !== "IMAGE") continue;
-            if (inp.link == null) continue;
-            const src = getUpstreamNode(this, i);
-            const nm = src?.title || "视频";
-            connectedNames.add(nm);
-            if (inp.name !== nm) {
-                inp.name = nm;
+            if (inputs[i].type === "IMAGE") vIndices.push(i);
+        }
+        if (vIndices.length === 0) {
+            this.addInput("*", "IMAGE");
+            return true;
+        }
+
+        const nameCount = {};
+        const desiredNames = [];  // 与 vIndices 一一对应，空槽为 null
+        for (const vi of vIndices) {
+            const inp = inputs[vi];
+            if (inp.link == null) {
+                desiredNames.push(null);
+                continue;
             }
+            const src = getUpstreamNode(this, vi);
+            const base = src?.title || "视频";
+            const cnt = nameCount[base] || 0;
+            nameCount[base] = cnt + 1;
+            desiredNames.push(cnt === 0 ? base : base + "_" + cnt);
         }
 
         let ch = false;
 
-        // 每个已连接视频槽 → 确保配对音频槽「nm（音频）」
-        for (const nm of connectedNames) {
-            const audioName = nm + "（音频）";
-            if (!inputs.some(x => x.name === audioName)) {
-                this.addInput(audioName, "AUDIO");
+        // 应用视频槽名
+        for (let k = 0; k < vIndices.length; k++) {
+            const inp = inputs[vIndices[k]];
+            const nm = desiredNames[k];
+            if (nm !== null && inp.name !== nm) {
+                inp.name = nm;
                 ch = true;
             }
         }
 
-        // ── 2. 清理孤立音频槽（对应视频已断开） ──
-        const validAudios = new Set([...connectedNames].map(n => n + "（音频）"));
+        // ── 2. 配对音频槽（每个视频槽一个独立音频槽） ──
+        const validAudios = new Set();
+        for (const nm of desiredNames) {
+            if (nm !== null) validAudios.add(nm + "（音频）");
+        }
+        // 清理孤立音频槽（对应视频已断开）
         for (let i = inputs.length - 1; i >= 0; i--) {
             const inp = inputs[i];
             if (inp.name && inp.name.includes("（音频）")) {
@@ -107,21 +123,21 @@ function patchInstance(self) {
                 }
             }
         }
-
-        // ── 3. 最后一个视频槽已连接 → 新增空视频槽 ──
-        const vIndices = [];
-        for (let i = 0; i < inputs.length; i++) {
-            if (inputs[i].type === "IMAGE") vIndices.push(i);
-        }
-        if (vIndices.length === 0) {
-            this.addInput("*", "IMAGE");
-            ch = true;
-        } else {
-            const lastV = inputs[vIndices[vIndices.length - 1]];
-            if (lastV?.link != null) {
-                this.addInput("*", "IMAGE");
+        // 添加缺失音频槽
+        for (const nm of desiredNames) {
+            if (nm === null) continue;
+            const audioName = nm + "（音频）";
+            if (!inputs.some(x => x.name === audioName)) {
+                this.addInput(audioName, "AUDIO");
                 ch = true;
             }
+        }
+
+        // ── 3. 最后一个视频槽已连接 → 新增空视频槽 ──
+        const lastV = inputs[vIndices[vIndices.length - 1]];
+        if (lastV?.link != null) {
+            this.addInput("*", "IMAGE");
+            ch = true;
         }
 
         // ── 4. 移除多余空视频槽（保留最后一个空的） ──
