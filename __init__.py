@@ -21,6 +21,8 @@ from .nodes_llama import (
     JLZ_LlamaModelLoaderPro,
     JLZ_MiniMax_ScriptWriter,
     JLZ_MiniMax_PromptGenerator,
+    JLZ_MiniMaxPreset,
+    JLZ_MiniMaxRef2vaPreset,
 )
 
 WEB_DIRECTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "js")
@@ -34,6 +36,8 @@ NODE_CLASS_MAPPINGS = {
     "JLZ_LlamaModelLoaderPro": JLZ_LlamaModelLoaderPro,
     "JLZ_MiniMax_ScriptWriter": JLZ_MiniMax_ScriptWriter,
     "JLZ_MiniMax_PromptGenerator": JLZ_MiniMax_PromptGenerator,
+    "JLZ_MiniMaxPreset": JLZ_MiniMaxPreset,
+    "JLZ_MiniMaxRef2vaPreset": JLZ_MiniMaxRef2vaPreset,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -45,6 +49,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JLZ_LlamaModelLoaderPro": "JLZ - 🚀 模型加载器Pro",
     "JLZ_MiniMax_ScriptWriter": "JLZ - 🎬 剧本编剧",
     "JLZ_MiniMax_PromptGenerator": "JLZ - ✍️ 分镜词生成器",
+    "JLZ_MiniMaxPreset": "JLZ - ✨ MiniMax-fl2va提示词预设",
+    "JLZ_MiniMaxRef2vaPreset": "JLZ - ✨ MiniMax-ref2va提示词预设",
 }
 
 
