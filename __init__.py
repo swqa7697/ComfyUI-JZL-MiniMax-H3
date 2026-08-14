@@ -11,6 +11,7 @@ from server import PromptServer
 from aiohttp import web
 
 from .nodes import JZL_MiniMaxH3ReferenceToVideo
+from .nodes_hailuo_video import JZL_HailuoH3VideoParams
 from .story_nodes import (
     JZL_MiniMax_ShotFormatter,
     JZL_MiniMax_SceneDispatcher,
@@ -19,38 +20,43 @@ from .story_nodes import (
 )
 from .nodes_llama import (
     JZL_LlamaModelLoaderPro,
-    JZL_MiniMax_ScriptWriter,
-    JZL_MiniMax_PromptGenerator,
+    JZL_MiniMax_ScriptProcessor,
     JZL_MiniMaxPreset,
     JZL_MiniMaxRef2vaPreset,
 )
+from .nodes_music import JZL_MiniMaxMusicCaption
+from .nodes_music_lyrics import JZL_MiniMaxMusicLyricsEditor
 
 WEB_DIRECTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "js")
 
 NODE_CLASS_MAPPINGS = {
     "JZL_MiniMaxH3ReferenceToVideo": JZL_MiniMaxH3ReferenceToVideo,
+    "JZL_HailuoH3VideoParams": JZL_HailuoH3VideoParams,
     "JZL_MiniMax_ShotFormatter": JZL_MiniMax_ShotFormatter,
     "JZL_MiniMax_SceneDispatcher": JZL_MiniMax_SceneDispatcher,
     "JZL_MiniMax_VideoDispatcher": JZL_MiniMax_VideoDispatcher,
     "JZL_MiniMax_AudioDispatcher": JZL_MiniMax_AudioDispatcher,
     "JZL_LlamaModelLoaderPro": JZL_LlamaModelLoaderPro,
-    "JZL_MiniMax_ScriptWriter": JZL_MiniMax_ScriptWriter,
-    "JZL_MiniMax_PromptGenerator": JZL_MiniMax_PromptGenerator,
+    "JZL_MiniMax_ScriptProcessor": JZL_MiniMax_ScriptProcessor,
     "JZL_MiniMaxPreset": JZL_MiniMaxPreset,
     "JZL_MiniMaxRef2vaPreset": JZL_MiniMaxRef2vaPreset,
+    "JZL_MiniMaxMusicCaption": JZL_MiniMaxMusicCaption,
+    "JZL_MiniMaxMusicLyricsEditor": JZL_MiniMaxMusicLyricsEditor,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "JZL_MiniMaxH3ReferenceToVideo": "JZL - 🎬 MiniMax H3 参考编码",
+    "JZL_HailuoH3VideoParams": "JZL - 🌊 海螺H3视频参数",
     "JZL_MiniMax_ShotFormatter": "JZL - 📋 分镜处理中心",
     "JZL_MiniMax_SceneDispatcher": "JZL - 🎯 场景元素调度",
     "JZL_MiniMax_VideoDispatcher": "JZL - 🎬 视频调度",
     "JZL_MiniMax_AudioDispatcher": "JZL - 🎧 音频调度",
     "JZL_LlamaModelLoaderPro": "JZL - 🚀 模型加载Pro",
-    "JZL_MiniMax_ScriptWriter": "JZL - 🎬 剧本编剧",
-    "JZL_MiniMax_PromptGenerator": "JZL - ✍️ 分镜词生成器",
+    "JZL_MiniMax_ScriptProcessor": "JZL - 🎬 剧本与镜头处理器",
     "JZL_MiniMaxPreset": "JZL - ✨ MiniMax-fl2va提示词预设",
     "JZL_MiniMaxRef2vaPreset": "JZL - ✨ MiniMax-ref2va提示词预设",
+    "JZL_MiniMaxMusicCaption": "JZL - 🎵 MiniMax Music3 提示词预设",
+    "JZL_MiniMaxMusicLyricsEditor": "JZL - 🎵 MiniMax Music3 歌词编辑",
 }
 
 

@@ -63,18 +63,20 @@ def _find_latest_version(base_dir):
     return os.path.join(base_dir, "第001次分镜词"), 1
 
 
-def _parse_three_in_one(content):
-    """解析三合一格式, 返回 (h3_prompt, scene_info, va_info)"""
-    h3, scene, va = "", "{}", "{}"
+def _parse_four_in_one(content):
+    """解析四段格式, 返回 (h3_prompt, scene_info, video_info, audio_info)"""
+    h3, scene, video, audio = "", "{}", "{}", "{}"
     for section in re.split(r'\n(?====)', content):
         section = section.strip()
         if section.startswith("===H3_PROMPT==="):
             h3 = section[len("===H3_PROMPT===\n"):].strip()
         elif section.startswith("===SCENE_INSTRUCTION==="):
             scene = section[len("===SCENE_INSTRUCTION===\n"):].strip()
-        elif section.startswith("===VIDEO_AUDIO_INSTRUCTION==="):
-            va = section[len("===VIDEO_AUDIO_INSTRUCTION===\n"):].strip()
-    return h3, scene, va
+        elif section.startswith("===VIDEO_INSTRUCTION==="):
+            video = section[len("===VIDEO_INSTRUCTION===\n"):].strip()
+        elif section.startswith("===AUDIO_INSTRUCTION==="):
+            audio = section[len("===AUDIO_INSTRUCTION===\n"):].strip()
+    return h3, scene, video, audio
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -111,11 +113,12 @@ class JZL_MiniMax_ShotFormatter:
         # ── 重拍: 只读选中的本地文件 ──
         if reshoot_mode and _reshoot_path and os.path.isfile(_reshoot_path):
             content = open(_reshoot_path, "r", encoding="utf-8").read()
-            h, s, v = _parse_three_in_one(content)
+            h, s, vid, aud = _parse_four_in_one(content)
             h3_list = [h or "[未找到H3提示词]"]
             scene_list = [s or "{}"]
-            va_list = [v or "{}"]
-            return {"ui": {"text": h3_list}, "result": (h3_list, scene_list, va_list, va_list)}
+            video_list = [vid or "{}"]
+            audio_list = [aud or "{}"]
+            return {"ui": {"text": h3_list}, "result": (h3_list, scene_list, video_list, audio_list)}
 
         # ── 正常模式: 优先从总线读取(无磁盘IO), 回退到磁盘 ──
         try:
@@ -125,7 +128,8 @@ class JZL_MiniMax_ShotFormatter:
 
         h3_list = bus_data.get("h3_prompts", [])
         scene_list = bus_data.get("scene_infos", [])
-        va_list = bus_data.get("va_infos", [])
+        video_list = bus_data.get("video_infos", [])
+        audio_list = bus_data.get("audio_infos", [])
 
         if not h3_list:
             # 磁盘回退
@@ -134,7 +138,7 @@ class JZL_MiniMax_ShotFormatter:
             if not shots:
                 return {"ui": {"text": [""]}, "result": ([""], ["{}"], ["{}"], ["{}"])}
             shot_count = len(shots)
-            h3_list, scene_list, va_list = [], [], []
+            h3_list, scene_list, video_list, audio_list = [], [], [], []
 
             base_dir = _get_output_dir(story_name, "H3提示词")
             latest_dir, _ = _find_latest_version(base_dir)
@@ -147,16 +151,18 @@ class JZL_MiniMax_ShotFormatter:
                         shot_files[int(m.group(1))] = os.path.join(latest_dir, f)
 
             for i in range(1, shot_count + 1):
-                h3, scene, va = "[未找到H3提示词]", "{}", "{}"
+                h3, scene, vid, aud = "[未找到H3提示词]", "{}", "{}", "{}"
                 if i in shot_files:
                     content = open(shot_files[i], "r", encoding="utf-8").read()
-                    h, s, v = _parse_three_in_one(content)
+                    h, s, vv, aa = _parse_four_in_one(content)
                     if h:
                         h3 = h
                     if s:
                         scene = s
-                    if v:
-                        va = v
+                    if vv:
+                        vid = vv
+                    if aa:
+                        aud = aa
                 if scene == "{}" and i <= len(shots):
                     block = shots[i - 1]["raw"]
                     chars, bg, props, cam, act = "无", "", "无", "固定", ""
@@ -169,18 +175,22 @@ class JZL_MiniMax_ShotFormatter:
                         if m:
                             locals()[pat_key] = m.group(1).strip()
                     scene = json.dumps({"shot": i, "characters": chars or "无", "scene": bg, "props": props or "无"}, ensure_ascii=False)
-                    va = json.dumps({"shot": i, "camera": cam or "固定", "action": act}, ensure_ascii=False)
+                    vid = json.dumps({"shot": i, "camera": cam or "固定", "action": act, "video_hint": ""}, ensure_ascii=False)
+                    aud = json.dumps({"shot": i, "audio_hint": ""}, ensure_ascii=False)
                 h3_list.append(h3)
                 scene_list.append(scene)
-                va_list.append(va)
+                video_list.append(vid)
+                audio_list.append(aud)
 
         # 对齐长度
         while len(scene_list) < len(h3_list):
             scene_list.append("{}")
-        while len(va_list) < len(h3_list):
-            va_list.append("{}")
+        while len(video_list) < len(h3_list):
+            video_list.append("{}")
+        while len(audio_list) < len(h3_list):
+            audio_list.append("{}")
 
-        return {"ui": {"text": h3_list}, "result": (h3_list, scene_list, va_list, va_list)}
+        return {"ui": {"text": h3_list}, "result": (h3_list, scene_list, video_list, audio_list)}
 
 
 # ═══════════════════════════════════════════════════════════════

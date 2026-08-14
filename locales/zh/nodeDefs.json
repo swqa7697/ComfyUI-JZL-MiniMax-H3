@@ -108,16 +108,25 @@
       "1": { "name": "⚙️ 推理参数" }
     }
   },
-  "JZL_MiniMax_ScriptWriter": {
-    "display_name": "JZL - 🎬 剧本编剧",
+  "JZL_MiniMax_ScriptProcessor": {
+    "display_name": "JZL - 🎬 剧本与镜头处理器",
     "inputs": {
       "llm_backend": { "name": "🔌 LLM后端" },
       "mode": { "name": "🎯 运行模式" },
       "story_style": { "name": "🎨 故事风格" },
       "story_name": { "name": "📛 故事名称" },
       "story_input": { "name": "📖 故事内容" },
-      "shot_preference": { "name": "🎭 分镜偏好" },
       "shot_length": { "name": "🎞️ 镜头数量" },
+      "shot_duration": { "name": "⏱️ 分镜时长(秒)" },
+      "prompt_lang": { "name": "🌐 提示词语言" },
+      "ref_image_intro": { "name": "🖼️ 参考图片介绍" },
+      "ref_video_intro": { "name": "🎬 参考视频介绍" },
+      "ref_audio_intro": { "name": "🎧 参考音频介绍" },
+      "advanced_settings": { "name": "⚙️ 高级参数" },
+      "enable_scene": { "name": "🎯 启用场景" },
+      "enable_props": { "name": "🧰 启用道具" },
+      "enable_video": { "name": "🎬 启用视频" },
+      "enable_audio": { "name": "🎧 启用音频" },
       "seed": { "name": "🎲 随机种子" },
       "force_offload": { "name": "🗑️ 强制卸载" },
       "save_states": { "name": "💾 保存对话状态" },
@@ -128,20 +137,6 @@
     "outputs": {
       "0": { "name": "🔗 参数总线" },
       "1": { "name": "📜 剧本输出" }
-    }
-  },
-  "JZL_MiniMax_PromptGenerator": {
-    "display_name": "JZL - ✍️ 分镜词生成器",
-    "inputs": {
-      "bus": { "name": "🔗 参数总线" },
-      "shot_text": { "name": "📜 剧本输入" },
-      "seed": { "name": "🎲 随机种子" },
-      "force_offload": { "name": "🗑️ 强制卸载" },
-      "save_states": { "name": "💾 保存对话状态" }
-    },
-    "outputs": {
-      "0": { "name": "🔗 参数总线" },
-      "1": { "name": "📜 剧本输入" }
     }
   },
   "JZL_MiniMaxPreset": {
@@ -173,6 +168,55 @@
     },
     "outputs": {
       "0": { "name": "📝 system_prompt" }
+    }
+  },
+  "JZL_HailuoH3VideoParams": {
+    "display_name": "JZL - 🌊 海螺H3视频参数",
+    "inputs": {
+      "aspect_ratio": { "name": "画面比例" },
+      "megapixels": { "name": "像素(MP)" },
+      "multiple": { "name": "分辨率对齐" },
+      "frames_display": { "name": "分辨率 & 帧数估算" },
+      "duration": { "name": "⏱️ 时长(秒)" }
+    },
+    "outputs": {
+      "0": { "name": "宽" },
+      "1": { "name": "高" },
+      "2": { "name": "帧数" },
+      "3": { "name": "短边尺寸" }
+    }
+  },
+  "JZL_MiniMaxMusicCaption": {
+    "display_name": "JZL - 🎵 MiniMax Music3 提示词预设",
+    "inputs": {
+      "音乐风格": { "name": "音乐风格" },
+      "风格融合": { "name": "风格融合" },
+      "速度": { "name": "速度(BPM)" },
+      "调性": { "name": "调性" },
+      "拍号": { "name": "拍号" },
+      "情绪氛围": { "name": "情绪氛围" },
+      "情绪演变": { "name": "情绪演变" },
+      "使用场景": { "name": "使用场景" },
+      "段落结构": { "name": "段落结构" },
+      "人声配置": { "name": "人声配置" },
+      "声部音区": { "name": "声部音区" },
+      "人声音色": { "name": "人声音色" },
+      "人声唱法": { "name": "人声唱法" },
+      "和声伴唱": { "name": "和声伴唱" },
+      "人声效果": { "name": "人声效果" },
+      "制作质感": { "name": "制作质感" }
+    },
+    "outputs": {
+      "0": { "name": "🎵 caption" }
+    }
+  },
+  "JZL_MiniMaxMusicLyricsEditor": {
+    "display_name": "JZL - 🎵 MiniMax Music3 歌词编辑",
+    "inputs": {
+      "lyrics_text": { "name": "歌词" }
+    },
+    "outputs": {
+      "0": { "name": "🎤 lyrics" }
     }
   }
 }

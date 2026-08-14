@@ -161,10 +161,21 @@ class JZL_LlamaModelLoaderPro:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  节点 2: 剧本编剧 (总线生产者)
+#  节点 2: 剧本与镜头处理器 (剧本编剧 + 分镜词生成器 合一)
+#  故事 → N 镜（每镜三合一：H3提示词 + 场景指令 + 音视频指令）
 # ═══════════════════════════════════════════════════════════════
 
-class JZL_MiniMax_ScriptWriter:
+class JZL_MiniMax_ScriptProcessor:
+    """剧本与镜头处理器 — 一次 LLM 调用：故事拆解 + 每镜 H3 提示词 + 调度指令。"""
+
+    _FIELD_PATTERNS = [
+        ("characters", r'\*\*角色\*\*[：:]\s*(.+?)(?:\n|$)'),
+        ("scene", r'\*\*场景\*\*[：:]\s*(.+?)(?:\n|$)'),
+        ("props", r'\*\*道具\*\*[：:]\s*(.+?)(?:\n|$)'),
+        ("camera", r'\*\*运镜\*\*[：:]\s*(.+?)(?:\n|$)'),
+        ("action", r'\*\*动作描述\*\*[：:]\s*(.+?)(?:\n|$)'),
+    ]
+
     @classmethod
     def INPUT_TYPES(cls):
         from .presets.script import STORY_STYLES, SHOT_COUNT_OPTIONS
@@ -179,8 +190,30 @@ class JZL_MiniMax_ScriptWriter:
                 "story_style": (list(_ss.keys()), {"default": list(_ss.keys())[0] if _ss else "热血战斗"}),
                 "story_name": ("STRING", {"default": "", "placeholder": "故事名称"}),
                 "story_input": ("STRING", {"multiline": True, "default": ""}),
-                "shot_preference": (["跟随剧本", "着重文戏", "着重武戏"], {"default": "跟随剧本"}),
                 "shot_length": (list(SHOT_COUNT_OPTIONS.keys()), {"default": list(SHOT_COUNT_OPTIONS.keys())[0] if SHOT_COUNT_OPTIONS else "短篇 (4镜)"}),
+                "shot_duration": ("INT", {"default": 8, "min": 4, "max": 15, "step": 1,
+                    "tooltip": "分镜时长(秒)，强制每个分镜视频长度。与「海螺H3视频参数」的时长联动"}),
+                "prompt_lang": (["中文 [ZH]", "英文 [EN]"], {"default": "中文 [ZH]"}),
+                "ref_image_intro": ("STRING", {"multiline": True, "default": "",
+                    "placeholder": "参考图片介绍，例：图1主角特写，图2背景街道..."}),
+                "ref_video_intro": ("STRING", {"multiline": True, "default": "",
+                    "placeholder": "参考视频介绍，例：视频1运镜参考，视频2动作参考..."}),
+                "ref_audio_intro": ("STRING", {"multiline": True, "default": "",
+                    "placeholder": "参考音频介绍，例：音频1男主音色，音频2女主音色..."}),
+                "advanced_settings": ("BOOLEAN", {
+                    "default": False,
+                    "label_on": "高级参数 ▾",
+                    "label_off": "高级参数 ▸",
+                    "tooltip": "开启后显示场景/道具/视频/音频调度开关"
+                }),
+                "enable_scene": ("BOOLEAN", {"default": True, "label_on": "启用场景", "label_off": "禁用场景",
+                    "tooltip": "启用后统计表和分镜里才会输出场景分类调度指令"}),
+                "enable_props": ("BOOLEAN", {"default": True, "label_on": "启用道具", "label_off": "禁用道具",
+                    "tooltip": "启用后统计表和分镜里才会输出道具分类调度指令"}),
+                "enable_video": ("BOOLEAN", {"default": True, "label_on": "启用视频", "label_off": "禁用视频",
+                    "tooltip": "启用后分镜里才会输出参考视频调度指令"}),
+                "enable_audio": ("BOOLEAN", {"default": True, "label_on": "启用音频", "label_off": "禁用音频",
+                    "tooltip": "启用后分镜里才会输出参考音频调度指令"}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "step": 1}),
                 "force_offload": ("BOOLEAN", {"default": False}),
                 "save_states": ("BOOLEAN", {"default": False}),
@@ -197,18 +230,103 @@ class JZL_MiniMax_ScriptWriter:
     FUNCTION = "execute"
     CATEGORY = "JZL/MiniMax"
 
+    @classmethod
+    def _parse_four_in_one(cls, content):
+        """解析四段格式, 返回 (h3_prompt, scene_info, video_info, audio_info)"""
+        h3, scene, video, audio = "", "{}", "{}", "{}"
+        for section in re.split(r'\n(?====)', content):
+            section = section.strip()
+            if section.startswith("===H3_PROMPT==="):
+                h3 = section[len("===H3_PROMPT===\n"):].strip()
+            elif section.startswith("===SCENE_INSTRUCTION==="):
+                scene = section[len("===SCENE_INSTRUCTION===\n"):].strip()
+            elif section.startswith("===VIDEO_INSTRUCTION==="):
+                video = section[len("===VIDEO_INSTRUCTION===\n"):].strip()
+            elif section.startswith("===AUDIO_INSTRUCTION==="):
+                audio = section[len("===AUDIO_INSTRUCTION===\n"):].strip()
+        return h3, scene, video, audio
+
+    @classmethod
+    def _extract_scene_info(cls, shot, shot_num, enable_scene=True, enable_props=True):
+        chars, scene, props = "无", "", "无"
+        for key, pat in cls._FIELD_PATTERNS:
+            m = re.search(pat, shot)
+            if not m:
+                continue
+            val = m.group(1).strip()
+            if key == "characters":
+                chars = val
+            elif key == "scene" and enable_scene:
+                scene = val
+            elif key == "props" and enable_props:
+                props = val
+        return json.dumps({"shot": shot_num, "characters": chars or "无", "scene": scene, "props": props or "无"}, ensure_ascii=False)
+
+    @classmethod
+    def _extract_video_info(cls, shot, shot_num):
+        camera, action = "固定", ""
+        for key, pat in cls._FIELD_PATTERNS:
+            m = re.search(pat, shot)
+            if not m:
+                continue
+            val = m.group(1).strip()
+            if key == "camera":
+                camera = val
+            elif key == "action":
+                action = val
+        return json.dumps({"shot": shot_num, "camera": camera or "固定", "action": action, "video_hint": ""}, ensure_ascii=False)
+
+    @classmethod
+    def _extract_audio_info(cls, shot, shot_num):
+        return json.dumps({"shot": shot_num, "audio_hint": ""}, ensure_ascii=False)
+
+    @classmethod
+    def _build_stat_table(cls, scene_list, shot_count):
+        chars, scenes, props = [], [], []
+        for s in scene_list:
+            try:
+                d = json.loads(s) if isinstance(s, str) else (s or {})
+            except Exception:
+                d = {}
+            for c in str(d.get("characters", "")).replace("、", ",").split(","):
+                c = c.strip()
+                if c and c != "无" and c not in chars:
+                    chars.append(c)
+            sc = str(d.get("scene", "")).strip()
+            if sc and sc not in scenes:
+                scenes.append(sc)
+            for p in str(d.get("props", "")).replace("、", ",").split(","):
+                p = p.strip()
+                if p and p != "无" and p not in props:
+                    props.append(p)
+        lines = ["[Statistical table]"]
+        lines.append(f"角色共{len(chars)}个：{'、'.join(chars) if chars else '无'}")
+        lines.append(f"场景共{len(scenes)}个：{'、'.join(scenes) if scenes else '无'}")
+        lines.append(f"道具共{len(props)}个：{'、'.join(props) if props else '无'}")
+        lines.append(f"分镜共{shot_count}个")
+        return "\n".join(lines)
+
     def execute(self, mode, story_name, story_input, story_style, shot_length,
+                shot_duration, prompt_lang, ref_image_intro, ref_video_intro, ref_audio_intro,
+                advanced_settings, enable_scene, enable_props, enable_video, enable_audio,
                 seed, force_offload, save_states,
-                llm_backend="local", shot_preference="跟随剧本", llama_model=None, parameters=None, api_response=None):
-        from .presets.script import build_script_prompt, SHOT_COUNT_OPTIONS
+                llm_backend="local", llama_model=None, parameters=None, api_response=None):
+        from .presets.script import build_shot_prompt, SHOT_COUNT_OPTIONS
 
         bus = json.dumps({"story_name": story_name, "api_response": api_response, "has_llama": llama_model is not None}, ensure_ascii=False)
         if not story_input or not story_input.strip():
             return (bus, "[错误] 请输入故事内容")
 
-        system_prompt = build_script_prompt(user_story=story_input.strip(), mode=mode, story_style=story_style, shot_count_label=shot_length)
+        lang = "zh" if "ZH" in prompt_lang else "en"
+        system_prompt = build_shot_prompt(
+            user_story=story_input.strip(), mode=mode, story_style=story_style,
+            shot_count_label=shot_length, lang=lang, shot_duration=shot_duration,
+            ref_image_intro=ref_image_intro, ref_video_intro=ref_video_intro, ref_audio_intro=ref_audio_intro,
+            enable_scene=enable_scene, enable_props=enable_props,
+            enable_video=enable_video, enable_audio=enable_audio,
+        )
         shot_count = SHOT_COUNT_OPTIONS.get(shot_length, 4)
-        user_msg = f"请生成 {shot_count} 个分镜。输出 [SHOT_START]...[SHOT_END] 格式的分镜块。"
+        user_msg = f"请生成恰好 {shot_count} 个镜头，每个镜头固定 {shot_duration} 秒，输出 [SHOT_START]...[SHOT_END] 完整块（分镜信息 + 六段提示词 + 调度指令）。"
 
         if llm_backend == "api" and api_response:
             result = api_response
@@ -224,7 +342,7 @@ class JZL_MiniMax_ScriptWriter:
                     seed=seed, **_params)
                 result = output["choices"][0]["message"]["content"]
             except Exception as e:
-                return (bus, f"[LLM 错误] {e}")
+                result = f"[LLM 错误] {e}"
             finally:
                 if force_offload:
                     LLAMA_CPP_STORAGE.clean()
@@ -233,111 +351,59 @@ class JZL_MiniMax_ScriptWriter:
         else:
             return (bus, "[错误] 请连接 llama_model 或 api_response")
 
-        prefix = "生成故事拆解" if "生成" in mode else "原始故事拆解"
-        with open(_safe_path(_get_output_dir(story_name, "故事拆解"), prefix), "w", encoding="utf-8") as f:
-            f.write(result)
-        return (bus, result)
-
-
-# ═══════════════════════════════════════════════════════════════
-#  节点 3: 分镜词生成器 (批量)
-# ═══════════════════════════════════════════════════════════════
-
-class JZL_MiniMax_PromptGenerator:
-    """批量生成全部镜头的 H3 提示词 → 保存 TXT"""
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "bus": ("*", {"force_input": True}),
-                "shot_text": ("*", {"force_input": True}),
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "step": 1}),
-                "force_offload": ("BOOLEAN", {"default": False}),
-                "save_states": ("BOOLEAN", {"default": False}),
-            },
-        }
-
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("参数总线", "剧本输入")
-    FUNCTION = "execute"
-    CATEGORY = "JZL/MiniMax"
-
-    def execute(self, bus, shot_text, seed, force_offload, save_states):
-        from .presets.prompt import build_prompt_system
-
-        try:
-            bus_data = json.loads(bus) if isinstance(bus, str) else (bus or {})
-        except Exception:
-            bus_data = {}
-        story_name = bus_data.get("story_name", "")
-        api_response = bus_data.get("api_response")
-
-        shots = re.findall(r'\[SHOT_START\](.*?)\[SHOT_END\]', shot_text or "", re.DOTALL)
+        # 解析 N 镜 → 四段（H3提示词 / 场景 / 视频 / 音频），保存 TXT
+        shots = re.findall(r'\[SHOT_START\](.*?)\[SHOT_END\]', result or "", re.DOTALL)
         shots = [s.strip() for s in shots]
-        if not shots:
-            return (bus, shot_text)
+        h3_list, scene_list, video_list, audio_list = [], [], [], []
+        if shots:
+            base_dir = _get_output_dir(story_name, "H3提示词")
+            _, next_ver = _find_latest_version(base_dir)
+            ver_dir = os.path.join(base_dir, f"第{next_ver:03d}次分镜词")
+            os.makedirs(ver_dir, exist_ok=True)
+            for i, shot in enumerate(shots):
+                shot_num = i + 1
+                h3_text, scene_info, video_info, audio_info = self._parse_four_in_one(shot)
+                if not h3_text:
+                    h3_text = f"[解析失败] 第{shot_num}镜缺少 ===H3_PROMPT==="
+                if scene_info == "{}":
+                    scene_info = self._extract_scene_info(shot, shot_num, enable_scene, enable_props)
+                if video_info == "{}":
+                    video_info = self._extract_video_info(shot, shot_num)
+                if audio_info == "{}":
+                    audio_info = self._extract_audio_info(shot, shot_num)
+                h3_list.append(h3_text)
+                scene_list.append(scene_info)
+                video_list.append(video_info)
+                audio_list.append(audio_info)
 
-        h3_list, scene_list, va_list = [], [], []
-        base_dir = _get_output_dir(story_name, "H3提示词")
-        _, next_ver = _find_latest_version(base_dir)
-        ver_dir = os.path.join(base_dir, f"第{next_ver:03d}次分镜词")
-        os.makedirs(ver_dir, exist_ok=True)
-        for i, shot in enumerate(shots):
-            shot_num = i + 1
-            prompt = build_prompt_system("参考图/视频/音频将在生成时由调度器自动匹配", shot)
-            user_msg = f"为第 {shot_num} 镜生成 Minimax-H3 的视频提示词。直接输出提示词文本。"
+                ts = datetime.now().strftime("%H%M%S")
+                txt_path = os.path.join(ver_dir, f"{shot_num:03d}镜头_{ts}.txt")
+                with open(txt_path, "w", encoding="utf-8") as f:
+                    f.write(f"===H3_PROMPT===\n{h3_text}\n")
+                    f.write(f"===SCENE_INSTRUCTION===\n{scene_info}\n")
+                    f.write(f"===VIDEO_INSTRUCTION===\n{video_info}\n")
+                    f.write(f"===AUDIO_INSTRUCTION===\n{audio_info}\n")
 
-            if api_response:
-                h3_text = api_response
-            elif bus_data.get("has_llama") and LLAMA_CPP_STORAGE.llm:
-                try:
-                    output = LLAMA_CPP_STORAGE.llm.create_chat_completion(
-                        messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_msg}], seed=seed)
-                    h3_text = output["choices"][0]["message"]["content"]
-                except Exception as e:
-                    h3_text = f"[LLM 错误] 第{shot_num}镜: {e}"
-            else:
-                h3_text = f"[跳过] 第{shot_num}镜: 无LLM"
+        # 统计表由节点计算，保证准确（方便用户准备素材）
+        stat_table = self._build_stat_table(scene_list, len(shots))
 
-            chars = "无"
-            scene = ""
-            props = "无"
-            camera = "固定"
-            action = ""
-            for key, pat in [("characters", r'\*\*角色\*\*[：:]\s*(.+?)(?:\n|$)'),
-                             ("scene", r'\*\*场景\*\*[：:]\s*(.+?)(?:\n|$)'),
-                             ("props", r'\*\*道具\*\*[：:]\s*(.+?)(?:\n|$)'),
-                             ("camera", r'\*\*运镜\*\*[：:]\s*(.+?)(?:\n|$)'),
-                             ("action", r'\*\*动作描述\*\*[：:]\s*(.+?)(?:\n|$)')]:
-                m = re.search(pat, shot)
-                if m:
-                    locals()[key] = m.group(1).strip()
-
-            scene_info = json.dumps({"shot": shot_num, "characters": chars, "scene": scene, "props": props}, ensure_ascii=False)
-            va_info = json.dumps({"shot": shot_num, "camera": camera, "action": action}, ensure_ascii=False)
-
-            h3_list.append(h3_text)
-            scene_list.append(scene_info)
-            va_list.append(va_info)
-
-            ts = datetime.now().strftime("%H%M%S")
-            txt_path = os.path.join(ver_dir, f"{shot_num:03d}镜头_{ts}.txt")
-            with open(txt_path, "w", encoding="utf-8") as f:
-                f.write(f"===H3_PROMPT===\n{h3_text}\n")
-                f.write(f"===SCENE_INSTRUCTION===\n{scene_info}\n")
-                f.write(f"===VIDEO_AUDIO_INSTRUCTION===\n{va_info}\n")
-
+        bus_data = {"story_name": story_name, "api_response": api_response, "has_llama": llama_model is not None}
         bus_data["h3_prompts"] = h3_list
         bus_data["scene_infos"] = scene_list
-        bus_data["va_infos"] = va_list
+        bus_data["video_infos"] = video_list
+        bus_data["audio_infos"] = audio_list
+        bus_data["stat_table"] = stat_table
         new_bus = json.dumps(bus_data, ensure_ascii=False)
 
-        if force_offload:
-            LLAMA_CPP_STORAGE.clean()
-        elif not save_states:
-            LLAMA_CPP_STORAGE.clean_state()
-        return (new_bus, shot_text)
+        # 剧本输出：统计表 + 分镜原文（LLM 出错时直接透出错误信息）
+        script_output = (stat_table + "\n\n" + result) if shots else result
+
+        # 保存剧本（含统计表）
+        prefix = "生成故事拆解" if "生成" in mode else "原始故事拆解"
+        with open(_safe_path(_get_output_dir(story_name, "故事拆解"), prefix), "w", encoding="utf-8") as f:
+            f.write(script_output)
+
+        return (new_bus, script_output)
 
 
 class JZL_MiniMaxPreset:
