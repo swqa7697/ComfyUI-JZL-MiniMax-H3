@@ -202,3 +202,94 @@ class JZL_MiniMaxH3ReferenceToVideo(io.ComfyNode):
         if ref_blocks:
             cond = node_helpers.conditioning_set_values(cond, {"minimax_refs": ref_blocks})
         return io.NodeOutput(cond, latent)
+
+
+class JZL_MiniMaxH3ReferenceToVideo2(io.ComfyNode):
+    """ref2va 固定端口版：18 个写死的参考输入（9 图 + 3 视频 + 3 视频音轨 + 3 音频）。
+
+    与 JZL_MiniMaxH3ReferenceToVideo 逻辑完全一致，仅把 Autogrow 动态端口改为
+    固定端口，便于固定布线。
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="JZL_MiniMaxH3ReferenceToVideo2",
+            description="<Picture i> / <Video k> / <Audio j> 参考条件编码（MiniMax H3 ref2va，固定端口版）。提示词中使用相同标签引用。",
+            display_name="JZL - 🎬 MiniMax H3 参考编码2",
+            category="JZL/MiniMax",
+            inputs=[
+                io.Clip.Input("clip"),
+                io.Vae.Input("vae"),
+                io.Vae.Input("audio_vae"),
+                io.String.Input("prompt", multiline=True, dynamic_prompts=True),
+                io.Int.Input("width", default=1344, min=32, max=nodes.MAX_RESOLUTION, step=32),
+                io.Int.Input("height", default=768, min=32, max=nodes.MAX_RESOLUTION, step=32),
+                io.Int.Input("length", default=124, min=5, max=3600, step=17,
+                    tooltip="24fps 帧数，吸附到模型 17k+5 网格（124 ≈ 5s，训练区间约 124-362）"),
+                io.Combo.Input("ref_image_size", options=["match", "max"], default="match",
+                    tooltip="参考图尺寸策略。match=按生成画布像素面积等比缩小；max=短边对齐 2048，身份保真度最高但更慢。参考 token 参与每个采样步，max 可能慢数倍。"),
+                io.Float.Input("ref_scale", display_name="参考值放大", default=1.0, min=1.0, max=5.0, step=0.1,
+                    tooltip="仅 match 模式生效。参考图最终像素面积 = 生成画布面积 × 倍率（面积倍率，非分辨率倍率）。1.0=不放大，2.0=面积×2。越大保真度越高、越慢。"),
+                io.Image.Input("ref_image_0", optional=True),
+                io.Image.Input("ref_image_1", optional=True),
+                io.Image.Input("ref_image_2", optional=True),
+                io.Image.Input("ref_image_3", optional=True),
+                io.Image.Input("ref_image_4", optional=True),
+                io.Image.Input("ref_image_5", optional=True),
+                io.Image.Input("ref_image_6", optional=True),
+                io.Image.Input("ref_image_7", optional=True),
+                io.Image.Input("ref_image_8", optional=True),
+                io.Image.Input("ref_video_0", optional=True),
+                io.Image.Input("ref_video_1", optional=True),
+                io.Image.Input("ref_video_2", optional=True),
+                io.Audio.Input("ref_video_audio_0", optional=True),
+                io.Audio.Input("ref_video_audio_1", optional=True),
+                io.Audio.Input("ref_video_audio_2", optional=True),
+                io.Audio.Input("ref_audio_0", optional=True),
+                io.Audio.Input("ref_audio_1", optional=True),
+                io.Audio.Input("ref_audio_2", optional=True),
+            ],
+            outputs=[io.Conditioning.Output(display_name="positive"), io.Latent.Output()],
+        )
+
+    @classmethod
+    def execute(cls, clip, vae, audio_vae, prompt, width, height, length, ref_image_size="match",
+                ref_scale=1.0,
+                ref_image_0=None, ref_image_1=None, ref_image_2=None, ref_image_3=None,
+                ref_image_4=None, ref_image_5=None, ref_image_6=None, ref_image_7=None, ref_image_8=None,
+                ref_video_0=None, ref_video_1=None, ref_video_2=None,
+                ref_video_audio_0=None, ref_video_audio_1=None, ref_video_audio_2=None,
+                ref_audio_0=None, ref_audio_1=None, ref_audio_2=None) -> io.NodeOutput:
+        # 固定端口 → 组装成与原 Autogrow 相同的 dict 结构，复用原节点核心逻辑
+        ref_images = {}
+        for name, v in (
+            ("ref_image_0", ref_image_0), ("ref_image_1", ref_image_1),
+            ("ref_image_2", ref_image_2), ("ref_image_3", ref_image_3),
+            ("ref_image_4", ref_image_4), ("ref_image_5", ref_image_5),
+            ("ref_image_6", ref_image_6), ("ref_image_7", ref_image_7),
+            ("ref_image_8", ref_image_8),
+        ):
+            if v is not None:
+                ref_images[name] = v
+        ref_videos = {}
+        for name, v in (("ref_video_0", ref_video_0), ("ref_video_1", ref_video_1), ("ref_video_2", ref_video_2)):
+            if v is not None:
+                ref_videos[name] = v
+        ref_video_audios = {}
+        for name, v in (
+            ("ref_video_audio_0", ref_video_audio_0), ("ref_video_audio_1", ref_video_audio_1),
+            ("ref_video_audio_2", ref_video_audio_2),
+        ):
+            if v is not None:
+                ref_video_audios[name] = v
+        ref_audios = {}
+        for name, v in (("ref_audio_0", ref_audio_0), ("ref_audio_1", ref_audio_1), ("ref_audio_2", ref_audio_2)):
+            if v is not None:
+                ref_audios[name] = v
+
+        return JZL_MiniMaxH3ReferenceToVideo.execute(
+            clip, vae, audio_vae, prompt, width, height, length,
+            ref_image_size=ref_image_size, ref_scale=ref_scale,
+            ref_images=ref_images, ref_videos=ref_videos,
+            ref_video_audios=ref_video_audios, ref_audios=ref_audios)

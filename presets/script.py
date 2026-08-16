@@ -6,6 +6,8 @@ MiniMax-H3 剧本与镜头处理器 — System Prompt 零件库
 故事风格/镜头数量选项在此维护（fallback），正式设定词在 shed/ 目录。
 """
 
+import re
+
 # ═══════════════════════════════════════════════════════════════
 #  零件库 2: {Story_Style} — 故事风格
 # ═══════════════════════════════════════════════════════════════
@@ -66,41 +68,42 @@ STORY_STYLES = {
 #  零件库 3: {Shot_Count} — 故事长度选项
 # ═══════════════════════════════════════════════════════════════
 
-SHOT_COUNT_OPTIONS = {
-    "短篇 (4镜)": 4,
-    "中篇 (6镜)": 6,
-    "中篇 (9镜)": 9,
-    "长篇 (12镜)": 12,
-    "长篇 (16镜)": 16,
-    "长篇 (20镜)": 20,
-    "长篇 (24镜)": 24,
-    "长篇 (30镜)": 30,
-    "长篇 (36镜)": 36,
-    "长篇 (42镜)": 42,
-    "长篇 (48镜)": 48,
-    "长篇 (56镜)": 56,
+SEGMENT_COUNT_OPTIONS = {
+    "4段": 4,
+    "6段": 6,
+    "9段": 9,
+    "12段": 12,
+    "16段": 16,
+    "20段": 20,
+    "24段": 24,
+    "30段": 30,
+    "36段": 36,
+    "42段": 42,
+    "48段": 48,
+    "56段": 56,
 }
 
 
 # ═══════════════════════════════════════════════════════════════
 #  V2 融合骨架（剧本与镜头处理器专用）
-#  占位符: {Mode_Instruction} {Story_Style} {Shot_Count}
+#  占位符: {Mode_Instruction} {Story_Style} {Segment_Count}
 #          {Decompose_Rules} {Reference_Intro} {H3_Shot_Rules} {User_Story}
 # ═══════════════════════════════════════════════════════════════
 
-SCRIPT_SKELETON_V2 = '''# Role: 顶级短视频编剧 & MiniMax H3 分镜提示词工程师
+SCRIPT_SKELETON_V2 = '''# Role: 顶级短视频编剧 & MiniMax H3 分段提示词工程师
 你是专业的短视频编剧和 MiniMax H3 视频提示词撰写专家。你的任务分两步：
-第一步：把用户故事拆解为恰好 {Shot_Count} 个镜头（每镜 2-6 秒的独立视频片段）。
-第二步：为每个镜头写出一条可直接送入 MiniMax H3 模型生成视频的提示词。
+第一步：把用户故事按「情节」拆解为恰好 {Segment_Count} 个分段——每个分段是一段 {Segment_Duration} 秒的独立视频片段，对应故事的一个完整情节段落（不是单个动作；一个分段内可以包含多个连续动作）。
+第二步：把每个分段当成一段独立视频去润色，写出一条可直接送入 MiniMax H3 模型生成视频的完整提示词，详细描述要覆盖这段视频从头到尾的全部内容。
 
 ## 0. 任务模式
 {Mode_Instruction}
 
 ## 1. 故事风格
 {Story_Style}
+{User_Tags}
 
-## 2. 分镜数量铁律
-必须恰好生成 {Shot_Count} 个镜头，不多不少。每个镜头都是独立的一段视频片段。
+## 2. 分段数量铁律
+必须恰好生成 {Segment_Count} 个分段，不多不少。每个分段都是一段独立的视频片段（对应一个情节段落）。
 
 ## 3. 拆解规则
 {Decompose_Rules}
@@ -117,49 +120,69 @@ def _build_schedule_rules(lang, enable_scene, enable_props, enable_video, enable
     if lang == "zh":
         lines = ["### 4.5 调度开关约束（必须遵守）"]
         if enable_scene:
-            lines.append("- 场景分类已启用：SCENE_INSTRUCTION 的 scene 字段填写本镜场景，提示词中用 <Picture 1> 引用背景图。")
+            lines.append("- 场景调度已启用：SCENE_INSTRUCTION 的 slots 中包含「场景:槽位名」元素（槽位名与素材节点标题一致），提示词用对应的 <Picture N> 引用背景图。")
         else:
-            lines.append("- 场景分类已关闭：SCENE_INSTRUCTION 的 scene 字段留空字符串，提示词中不引用背景图、不写背景参考标签。")
+            lines.append("- 场景调度已关闭：分段信息「**场景**」写「无」，slots 不包含「场景:」元素，提示词用纯文本描述环境、不写背景参考标签。")
         if enable_props:
-            lines.append("- 道具分类已启用：SCENE_INSTRUCTION 的 props 字段填写本镜道具，提示词中可引用道具参考图。")
+            lines.append("- 道具调度已启用：SCENE_INSTRUCTION 的 slots 中包含「道具:槽位名」元素，提示词用对应的 <Picture N> 引用道具图。")
         else:
-            lines.append("- 道具分类已关闭：SCENE_INSTRUCTION 的 props 字段填\"无\"，提示词中不引用道具参考图。")
+            lines.append("- 道具调度已关闭：分段信息「**道具**」写「无」，slots 不包含「道具:」元素，提示词用纯文本描述道具、不写道具参考标签。")
         if enable_video:
-            lines.append("- 视频调度已启用：每个镜头输出 ===VIDEO_INSTRUCTION=== 段，提示词中可写 <Video N> 引用参考视频。")
+            lines.append("- 视频调度已启用：每个镜头输出 ===VIDEO_INSTRUCTION=== 段，slots 中含「视频:槽位名」元素，提示词用 <Video N> 引用。")
         else:
-            lines.append("- 视频调度已关闭：不要输出 ===VIDEO_INSTRUCTION=== 段，提示词中禁止写 <Video N> 标签。")
+            lines.append("- 视频调度已关闭：不输出 ===VIDEO_INSTRUCTION=== 段，不写 <Video N> 标签，动作/运镜直接用纯文本描述。")
         if enable_audio:
-            lines.append("- 音频调度已启用：每个镜头输出 ===AUDIO_INSTRUCTION=== 段，提示词中可写 <Audio N> 引用参考音频。")
+            lines.append("- 音频调度已启用：每个镜头输出 ===AUDIO_INSTRUCTION=== 段，slots 中含「音频:槽位名」元素，提示词用 <Audio N> 引用。")
         else:
-            lines.append("- 音频调度已关闭：不要输出 ===AUDIO_INSTRUCTION=== 段，提示词中禁止写 <Audio N> 标签。")
+            lines.append("- 音频调度已关闭：不输出 ===AUDIO_INSTRUCTION=== 段，不写 <Audio N> 标签，对话直接用 (S1)/(S2) 纯文本描述。")
     else:
         lines = ["### 4.5 Scheduling Toggle Rules (MUST follow)"]
         if enable_scene:
-            lines.append("- Scene classification ENABLED: fill the scene field in SCENE_INSTRUCTION; reference the background with <Picture 1> in the prompt.")
+            lines.append("- Scene scheduling ENABLED: SCENE_INSTRUCTION slots include \"scene:<slotName>\" elements (slot name matches the material node title); reference the background via the matching <Picture N>.")
         else:
-            lines.append("- Scene classification DISABLED: leave the scene field empty; do NOT reference any background image or background label.")
+            lines.append("- Scene scheduling DISABLED: write \"none\" in the **Scene** field; slots contain no \"scene:\" element; describe the environment in plain text without any background label.")
         if enable_props:
-            lines.append("- Prop classification ENABLED: fill the props field in SCENE_INSTRUCTION; may reference prop images in the prompt.")
+            lines.append("- Prop scheduling ENABLED: SCENE_INSTRUCTION slots include \"prop:<slotName>\" elements; reference props via matching <Picture N>.")
         else:
-            lines.append("- Prop classification DISABLED: set props to \"none\"; do NOT reference prop images.")
+            lines.append("- Prop scheduling DISABLED: write \"none\" in the **Props** field; slots contain no \"prop:\" element; describe props in plain text without any prop label.")
         if enable_video:
-            lines.append("- Video scheduling ENABLED: output ===VIDEO_INSTRUCTION=== per shot; may use <Video N> in the prompt.")
+            lines.append("- Video scheduling ENABLED: output ===VIDEO_INSTRUCTION=== with \"video:<slotName>\" slots; use <Video N> in the prompt.")
         else:
-            lines.append("- Video scheduling DISABLED: do NOT output ===VIDEO_INSTRUCTION===; do NOT use <Video N> labels.")
+            lines.append("- Video scheduling DISABLED: do NOT output ===VIDEO_INSTRUCTION=== nor use <Video N>; describe action/camera in plain text.")
         if enable_audio:
-            lines.append("- Audio scheduling ENABLED: output ===AUDIO_INSTRUCTION=== per shot; may use <Audio N> in the prompt.")
+            lines.append("- Audio scheduling ENABLED: output ===AUDIO_INSTRUCTION=== with \"audio:<slotName>\" slots; use <Audio N> in the prompt.")
         else:
-            lines.append("- Audio scheduling DISABLED: do NOT output ===AUDIO_INSTRUCTION===; do NOT use <Audio N> labels.")
+            lines.append("- Audio scheduling DISABLED: do NOT output ===AUDIO_INSTRUCTION=== nor use <Audio N>; describe dialogue with (S1)/(S2) in plain text.")
     return "\n".join(lines)
+
+
+def _extract_style_directing(style_text):
+    """提取风格设定里的「核心导演语法」段落（写动作时必须逐条执行的部分）。"""
+    if not style_text:
+        return ""
+    m = re.search(r'## 核心导演语法(.*?)(?=## )', style_text, re.DOTALL)
+    if not m:
+        return ""
+    return ("## 核心导演语法" + m.group(1)).rstrip()
+
+
+def _extract_detail_length(preference_text):
+    """从偏好设定词里提取「详细描述字数」的数字范围（如 800-1200），默认 350-500。"""
+    if not preference_text:
+        return "350-500"
+    m = re.search(r'详细描述字数[:：][^\n]*\((\d+-\d+)\s*[字词]', preference_text)
+    if m:
+        return m.group(1)
+    return "350-500"
 
 
 def build_shot_prompt(
     user_story: str,
     mode: str = "拆解模式 (Decompose)",
     story_style: str = "热血战斗",
-    shot_count_label: str = "短篇 (4镜)",
+    segment_count_label: str = "4段",
     lang: str = "zh",
-    shot_duration: int = 8,
+    segment_duration: int = 8,
     ref_image_intro: str = "",
     ref_video_intro: str = "",
     ref_audio_intro: str = "",
@@ -167,10 +190,13 @@ def build_shot_prompt(
     enable_props: bool = True,
     enable_video: bool = True,
     enable_audio: bool = True,
+    user_tags: str = "",
+    preference: str = "",
+    custom_rules: str = "",
 ) -> str:
     """剧本与镜头处理器 — 拼装一次成型的 System Prompt（融合拆解 + 六段 Ref2VA 规范）。
 
-    lang: "zh" / "en"；shot_duration: 分镜时长(秒)，约束时间戳范围。
+    lang: "zh" / "en"；segment_duration: 每段视频时长(秒)，约束时间戳范围。
     """
     from ..sheding.mode_instructions import MODE_INSTRUCTIONS as _mi
     from ..sheding.story_styles import STORY_STYLES as _ss
@@ -179,16 +205,20 @@ def build_shot_prompt(
 
     mode_instruction = _mi.get(mode, list(_mi.values())[0] if _mi else "")
     style = _ss.get(story_style, list(_ss.values())[0] if _ss else "")
-    shot_count = SHOT_COUNT_OPTIONS.get(shot_count_label, 4)
-    shot_duration = max(4, min(15, int(shot_duration or 8)))
+    segment_count = SEGMENT_COUNT_OPTIONS.get(segment_count_label, 4)
+    segment_duration = max(4, min(15, int(segment_duration or 8)))
 
     schedule_rules = _build_schedule_rules(lang, enable_scene, enable_props, enable_video, enable_audio)
 
     # 用 replace 而非 format：rules 文本内含 {视觉描述} 等示意大括号，不能走 format
     rules = (H3_SHOT_RULES_ZH if lang == "zh" else H3_SHOT_RULES_EN)
-    rules = rules.replace("{Shot_Count}", str(shot_count))
-    rules = rules.replace("{Shot_Duration}", str(shot_duration))
+    rules = rules.replace("{Segment_Count}", str(segment_count))
+    rules = rules.replace("{Segment_Duration}", str(segment_duration))
     rules = rules.replace("{Schedule_Rules}", schedule_rules)
+    rules = rules.replace("{Style_Directing}", _extract_style_directing(style))
+    rules = rules.replace("{Detail_Length}", _extract_detail_length(preference))
+    rules = rules.replace("{Preference_Directing}", (preference or "").strip() or "- （无额外镜头语言偏好，按故事风格与标准规则执行）")
+    rules = rules.replace("{Custom_Rules_Directing}", (custom_rules or "").strip() or "- （无自定义规则）")
 
     # 参考素材说明（可选）：让 LLM 知道有哪些参考素材、按编号规则写标签
     ref_parts = []
@@ -200,16 +230,19 @@ def build_shot_prompt(
         ref_parts.append(f"- 参考音频：{ref_audio_intro.strip()}")
     if ref_parts:
         reference_intro = ("## 3.5 参考素材说明\n" + "\n".join(ref_parts) +
-                           "\n\n按下面 4.2 的 subject_definitions 规则，在提示词中为实际用到的参考素材写 <Subject N>/<Picture N>/<Video N>/<Audio N> 标签。")
+                           "\n\n每条说明「槽位名素材名（描述）」即声明映射：槽位名（如「角色A」「场景A」）与素材节点标题一一对应，素材名（如「孙悟空」）是提示词里 <Subject N> 写的内容。"
+                           "调度指令 slots 里写槽位名，subject_definitions 里写素材名，二者靠 <Picture N>/<Video N>/<Audio N> 编号绑定。")
     else:
         reference_intro = ""
 
     return SCRIPT_SKELETON_V2.format(
-        Mode_Instruction=mode_instruction.format(Shot_Count=shot_count),
+        Mode_Instruction=mode_instruction.format(Segment_Count=segment_count),
         Story_Style=style,
-        Shot_Count=shot_count,
+        Segment_Count=segment_count,
+        Segment_Duration=segment_duration,
         Decompose_Rules=_dr,
         Reference_Intro=reference_intro,
         H3_Shot_Rules=rules,
         User_Story=user_story,
+        User_Tags=user_tags,
     )

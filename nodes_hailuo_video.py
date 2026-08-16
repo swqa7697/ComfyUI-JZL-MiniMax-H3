@@ -4,7 +4,7 @@ JZL MiniMax H3 — 海螺H3视频参数节点
 从 XB_ToolBox 的 XB_HailuoH3VideoParams 搬运，去掉帧率设置与输出端口。
 分辨率公式复刻官方 ResolutionSelector（MP×1024² → sqrt → round/multiple）。
 时间调节（步长 0.5 秒），帧数按 MiniMax H3 固定 24fps 自动推算。
-duration 与「剧本与镜头处理器」的 shot_duration 通过前端 JS 双向联动。
+duration 与「剧本与镜头处理器」的 segment_duration 通过前端 JS 双向联动。
 """
 
 import math
@@ -37,17 +37,21 @@ class JZL_HailuoH3VideoParams:
                 "frames_display": ("STRING", {"default": "Frames: 0", "multiline": False}),
                 "duration": ("INT", {
                     "default": 8, "min": 4, "max": 15, "step": 1,
-                    "tooltip": "视频时长 (秒), MiniMax H3 支持 4–15 秒。与「剧本与镜头处理器」的分镜时长联动"
+                    "tooltip": "视频时长 (秒), MiniMax H3 支持 4–15 秒。与「剧本与镜头处理器」的每段视频时长联动"
+                }),
+                "scale_factor": ("FLOAT", {
+                    "default": 1.0, "min": 1.0, "max": 5.0, "step": 0.1,
+                    "tooltip": "参考图放大系数 — 接入「MiniMax H3 参考编码」的参考值放大"
                 }),
             }
         }
 
-    RETURN_TYPES = ("INT", "INT", "INT", "INT")
-    RETURN_NAMES = ("Width", "Height", "Frames", "Scale Size")
+    RETURN_TYPES = ("INT", "INT", "INT", "FLOAT")
+    RETURN_NAMES = ("Width", "Height", "Frames", "参考图放大系数")
     FUNCTION = "process"
     CATEGORY = "JZL/MiniMax"
 
-    def process(self, aspect_ratio, megapixels, multiple, frames_display, duration):
+    def process(self, aspect_ratio, megapixels, multiple, frames_display, duration, scale_factor):
         # ── 分辨率：官方 ResolutionSelector 公式 ──
         w_ratio, h_ratio = ASPECT_RATIOS.get(aspect_ratio, (16, 9))
         total_pixels = megapixels * 1024 * 1024
@@ -59,4 +63,4 @@ class JZL_HailuoH3VideoParams:
         base = max(5, round(duration * 24))
         safe_len = base + (5 - (base % 17)) % 17
 
-        return (safe_w, safe_h, safe_len, max(safe_w, safe_h))
+        return (safe_w, safe_h, safe_len, scale_factor)

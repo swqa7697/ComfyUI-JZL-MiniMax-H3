@@ -6,7 +6,7 @@
  *   2) 值相等才写（!== 判断）——阻止来回跳的第一道闸
  *   3) 100ms 防抖窗口（_jzl_linked_sync + setTimeout）——覆盖反射期
  *   4) w.element 优先派发（新版 ComfyUI DOM 入口），兼容 inputEl
- * 只同步时长：duration（海螺）↔ shot_duration（剧本与镜头处理器）。
+ * 只同步时长：duration（海螺）↔ segment_duration（剧本与镜头处理器）。
  */
 
 import { app } from "../../scripts/app.js";
@@ -31,7 +31,7 @@ function syncProcessorToHailuo(graph) {
     const haiNodes = graph._nodes.filter(n => n.type === HAILUO_TYPE);
     if (!procNodes.length || !haiNodes.length) return;
 
-    const wDur = procNodes[0].widgets?.find(w => w.name === "shot_duration");
+    const wDur = procNodes[0].widgets?.find(w => w.name === "segment_duration");
     if (!wDur) return;
     const val = Math.max(4, Math.min(15, Math.round(Number(wDur.value)) || 8));
 
@@ -59,7 +59,7 @@ function syncHailuoToProcessor(graph) {
     for (const p of procNodes) {
         if (p._jzl_linked_sync) continue;
         p._jzl_linked_sync = true;
-        const wProc = p.widgets?.find(w => w.name === "shot_duration");
+        const wProc = p.widgets?.find(w => w.name === "segment_duration");
         if (wProc && Number(wProc.value) !== val) {
             wProc.value = val;
             dispatch(wProc, val);
@@ -78,10 +78,10 @@ app.registerExtension({
         setInterval(() => {
             if (!app.graph || !app.graph._nodes) return;
 
-            // 检测剧本处理器 shot_duration 变化
+            // 检测剧本处理器 segment_duration 变化
             for (const node of app.graph._nodes) {
                 if (node.type !== PROCESSOR_TYPE || !node.widgets) continue;
-                const wDur = node.widgets.find(w => w.name === "shot_duration");
+                const wDur = node.widgets.find(w => w.name === "segment_duration");
                 if (!wDur) continue;
                 const v = Number(wDur.value) || 8;
                 if (lastProcDur !== v) {

@@ -21,12 +21,29 @@
       "1": { "name": "潜空间" }
     }
   },
+  "JZL_MiniMaxH3ReferenceToVideo2": {
+    "display_name": "JZL - 🎬 MiniMax H3 参考编码2",
+    "inputs": {
+      "clip": { "name": "CLIP文本编码器" },
+      "vae": { "name": "VAE" },
+      "audio_vae": { "name": "音频VAE" },
+      "prompt": { "name": "提示词" },
+      "width": { "name": "宽度" },
+      "height": { "name": "高度" },
+      "length": { "name": "时长(帧)" },
+      "ref_image_size": { "name": "参考图尺寸" },
+      "ref_scale": { "name": "参考值放大" }
+    },
+    "outputs": {
+      "0": { "name": "正向条件" },
+      "1": { "name": "潜空间" }
+    }
+  },
   "JZL_MiniMax_ShotFormatter": {
-    "display_name": "JZL - 📋 分镜处理中心",
+    "display_name": "JZL - 📋 分段处理中心",
     "inputs": {
       "reshoot_mode": { "name": "🔄 重拍模式" },
-      "bus": { "name": "🔗 参数总线" },
-      "shot_text": { "name": "📝 分镜文本" },
+      "shot_text": { "name": "📝 剧本文本" },
       "_reshoot_path": { "name": "重拍文件路径" }
     },
     "outputs": {
@@ -56,7 +73,7 @@
   "JZL_MiniMax_VideoDispatcher": {
     "display_name": "JZL - 🎬 视频调度",
     "inputs": {
-      "va_instruction": { "name": "🎬🎧 视频音频指令" }
+      "va_instruction": { "name": "🎬 视频调度指令" }
     },
     "outputs": {
       "0": { "name": "🎬 ref_video_0" },
@@ -70,7 +87,49 @@
   "JZL_MiniMax_AudioDispatcher": {
     "display_name": "JZL - 🎧 音频调度",
     "inputs": {
-      "va_instruction": { "name": "🎬🎧 视频音频指令" }
+      "va_instruction": { "name": "� 音频调度指令" }
+    },
+    "outputs": {
+      "0": { "name": "🔊 ref_audio_0" },
+      "1": { "name": "🔊 ref_audio_1" },
+      "2": { "name": "🔊 ref_audio_2" }
+    }
+  },
+  "JZL_MiniMax_SceneDispatcher2": {
+    "display_name": "JZL - 🎯 场景元素调度2",
+    "inputs": {
+      "scene_instruction": { "name": "🎯 场景调度指令" }
+    },
+    "outputs": {
+      "0": { "name": "🖼️ ref_image_0" },
+      "1": { "name": "🖼️ ref_image_1" },
+      "2": { "name": "🖼️ ref_image_2" },
+      "3": { "name": "🖼️ ref_image_3" },
+      "4": { "name": "🖼️ ref_image_4" },
+      "5": { "name": "🖼️ ref_image_5" },
+      "6": { "name": "🖼️ ref_image_6" },
+      "7": { "name": "🖼️ ref_image_7" },
+      "8": { "name": "🖼️ ref_image_8" }
+    }
+  },
+  "JZL_MiniMax_VideoDispatcher2": {
+    "display_name": "JZL - 🎬 视频调度2",
+    "inputs": {
+      "va_instruction": { "name": "🎬 视频调度指令" }
+    },
+    "outputs": {
+      "0": { "name": "🎬 ref_video_0" },
+      "1": { "name": "🎧 ref_video_audio_0" },
+      "2": { "name": "🎬 ref_video_1" },
+      "3": { "name": "🎧 ref_video_audio_1" },
+      "4": { "name": "🎬 ref_video_2" },
+      "5": { "name": "🎧 ref_video_audio_2" }
+    }
+  },
+  "JZL_MiniMax_AudioDispatcher2": {
+    "display_name": "JZL - 🎧 音频调度2",
+    "inputs": {
+      "va_instruction": { "name": "🎧 音频调度指令" }
     },
     "outputs": {
       "0": { "name": "🔊 ref_audio_0" },
@@ -114,15 +173,16 @@
       "llm_backend": { "name": "🔌 LLM后端" },
       "mode": { "name": "🎯 运行模式" },
       "story_style": { "name": "🎨 故事风格" },
+      "use_custom_rule": { "name": "🔀 规则模式" },
+      "custom_rule_path": { "name": "📄 自定义规则" },
       "story_name": { "name": "📛 故事名称" },
       "story_input": { "name": "📖 故事内容" },
-      "shot_length": { "name": "🎞️ 镜头数量" },
-      "shot_duration": { "name": "⏱️ 分镜时长(秒)" },
+      "segment_count": { "name": "🎞️ 分段数量" },
+      "segment_duration": { "name": "⏱️ 每段视频时长(秒)" },
       "prompt_lang": { "name": "🌐 提示词语言" },
       "ref_image_intro": { "name": "🖼️ 参考图片介绍" },
       "ref_video_intro": { "name": "🎬 参考视频介绍" },
       "ref_audio_intro": { "name": "🎧 参考音频介绍" },
-      "advanced_settings": { "name": "⚙️ 高级参数" },
       "enable_scene": { "name": "🎯 启用场景" },
       "enable_props": { "name": "🧰 启用道具" },
       "enable_video": { "name": "🎬 启用视频" },
@@ -132,11 +192,48 @@
       "save_states": { "name": "💾 保存对话状态" },
       "llama_model": { "name": "🦙 Llama模型" },
       "parameters": { "name": "⚙️ 推理参数" },
-      "api_response": { "name": "🌐 API响应" }
+      "api_config": { "name": "🌐 API配置" },
+      "preference": { "name": "🎯 偏好设定" }
     },
     "outputs": {
-      "0": { "name": "🔗 参数总线" },
-      "1": { "name": "📜 剧本输出" }
+      "0": { "name": "📜 剧本输出" },
+      "1": { "name": "🔗 BUS" }
+    }
+  },
+  "JZL_MiniMaxPromptEnhancer": {
+    "display_name": "JZL - ✨ 提示词增强",
+    "inputs": {
+      "script_text": { "name": "📜 剧本输入" },
+      "bus": { "name": "🔗 BUS" },
+      "force_offload": { "name": "🗑️ 增强后卸载" },
+      "seed": { "name": "🎲 随机种子" }
+    },
+    "outputs": {
+      "0": { "name": "✨ 增强后剧本" }
+    }
+  },
+  "JZL_MiniMaxAPISettings": {
+    "display_name": "JZL - 🌐 API 设置",
+    "inputs": {
+      "open_settings": { "name": "⚙️ 打开 API 设置" }
+    },
+    "outputs": {
+      "0": { "name": "🔑 api_config" }
+    }
+  },
+  "JZL_MiniMaxH3Preference": {
+    "display_name": "JZL - 🎯 MiniMax H3 偏好设置",
+    "inputs": {
+      "景别偏好": { "name": "🎥 景别偏好" },
+      "运镜偏好": { "name": "🎥 运镜偏好" },
+      "切镜节奏": { "name": "✂️ 切镜节奏" },
+      "转场偏好": { "name": "🎞️ 转场偏好" },
+      "音乐风格": { "name": "🎵 音乐风格" },
+      "创作要求": { "name": "🎬 创作要求" },
+      "自定义镜头语言": { "name": "✍️ 自定义镜头语言" }
+    },
+    "outputs": {
+      "0": { "name": "🎯 偏好设定词" }
     }
   },
   "JZL_MiniMaxPreset": {
@@ -177,27 +274,32 @@
       "megapixels": { "name": "像素(MP)" },
       "multiple": { "name": "分辨率对齐" },
       "frames_display": { "name": "分辨率 & 帧数估算" },
-      "duration": { "name": "⏱️ 时长(秒)" }
+      "duration": { "name": "⏱️ 时长(秒)" },
+      "scale_factor": { "name": "参考图放大系数" }
     },
     "outputs": {
       "0": { "name": "宽" },
       "1": { "name": "高" },
       "2": { "name": "帧数" },
-      "3": { "name": "短边尺寸" }
+      "3": { "name": "参考图放大系数" }
     }
   },
   "JZL_MiniMaxMusicCaption": {
     "display_name": "JZL - 🎵 MiniMax Music3 提示词预设",
     "inputs": {
+      "高级参数": { "name": "高级参数" },
       "音乐风格": { "name": "音乐风格" },
       "风格融合": { "name": "风格融合" },
       "速度": { "name": "速度(BPM)" },
-      "调性": { "name": "调性" },
+      "调式": { "name": "调式" },
+      "调号": { "name": "调号" },
       "拍号": { "name": "拍号" },
       "情绪氛围": { "name": "情绪氛围" },
       "情绪演变": { "name": "情绪演变" },
       "使用场景": { "name": "使用场景" },
       "段落结构": { "name": "段落结构" },
+      "主奏乐器": { "name": "主奏乐器" },
+      "辅助乐器": { "name": "辅助乐器" },
       "人声配置": { "name": "人声配置" },
       "声部音区": { "name": "声部音区" },
       "人声音色": { "name": "人声音色" },
@@ -210,6 +312,40 @@
       "0": { "name": "🎵 caption" }
     }
   },
+  "JZL_MiniMaxMusicCaptionDuet": {
+    "display_name": "JZL - 🎵 MiniMax Music3 提示词预设（双人）",
+    "inputs": {
+      "高级参数": { "name": "高级参数" },
+      "音乐风格": { "name": "音乐风格" },
+      "风格融合": { "name": "风格融合" },
+      "速度": { "name": "速度(BPM)" },
+      "调式": { "name": "调式" },
+      "调号": { "name": "调号" },
+      "拍号": { "name": "拍号" },
+      "情绪氛围": { "name": "情绪氛围" },
+      "情绪演变": { "name": "情绪演变" },
+      "使用场景": { "name": "使用场景" },
+      "段落结构": { "name": "段落结构" },
+      "主奏乐器": { "name": "主奏乐器" },
+      "辅助乐器": { "name": "辅助乐器" },
+      "制作质感": { "name": "制作质感" },
+      "纯人声无伴奏": { "name": "纯人声无伴奏" },
+      "角色分工": { "name": "角色分工" },
+      "角色A配置": { "name": "角色A配置" },
+      "角色A音区": { "name": "角色A音区" },
+      "角色A音色": { "name": "角色A音色" },
+      "角色A唱法": { "name": "角色A唱法" },
+      "角色B配置": { "name": "角色B配置" },
+      "角色B音区": { "name": "角色B音区" },
+      "角色B音色": { "name": "角色B音色" },
+      "角色B唱法": { "name": "角色B唱法" },
+      "和声伴唱": { "name": "和声伴唱" },
+      "人声效果": { "name": "人声效果" }
+    },
+    "outputs": {
+      "0": { "name": "🎵 caption" }
+    }
+  },
   "JZL_MiniMaxMusicLyricsEditor": {
     "display_name": "JZL - 🎵 MiniMax Music3 歌词编辑",
     "inputs": {
@@ -217,6 +353,26 @@
     },
     "outputs": {
       "0": { "name": "🎤 lyrics" }
+    }
+  },
+  "JZL_ListDispatcher": {
+    "display_name": "JZL - 📋 列表分发",
+    "inputs": {
+      "文本输入": { "name": "📥 文本输入" },
+      "调度类型": { "name": "🔀 调度类型" },
+      "输出数量": { "name": "🔢 输出数量" }
+    },
+    "outputs": {
+      "0": { "name": "分段1" }
+    }
+  },
+  "JZL_MiniMaxH3RefBusOut": {
+    "display_name": "JZL - 🔗 MiniMax H3 参考总线（打包）"
+  },
+  "JZL_MiniMaxH3RefBusIn": {
+    "display_name": "JZL - 🔗 MiniMax H3 参考总线（解包）",
+    "inputs": {
+      "bus": { "name": "🔗 参考总线" }
     }
   }
 }

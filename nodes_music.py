@@ -208,6 +208,16 @@ class JZL_MiniMaxMusicCaption:
             "vocal": "Relaxed, soulful vocal with a melodic, conversational delivery, singing with warmth and occasional harmony backing, easy and unhurried.",
             "arrangement": "Offbeat skank guitar, deep round bassline, one-drop drums with rimshot accents, bright organ stabs. Intro: bass and skank set the groove. Verses: vocal floats over the one-drop. Chorus: harmonies lift. Instrumental: melodica or guitar solo. Outro: groove fades into dub echo.",
         },
+        "福音 / Gospel": {
+            "global": "Gospel. Soulful, uplifting, and deeply spiritual throughout, a swaying church choir raised in joyful praise. Handclaps, hammond organ, soaring harmonies. Warm live production: natural room reverb, rich choir, organic and reverent.",
+            "vocal": "Powerful lead vocal with gospel runs and call-and-response, backed by a lush choir with tight four-part harmonies, alternating between solo verses and full-chorus swells.",
+            "arrangement": "Hammond organ swells, rhythmic handclaps, walking bass, piano and a full choir. Intro: organ and a solo vocal line. Verses: call-and-response between lead and choir. Chorus: full choir in stacked harmonies with handclaps. Bridge: everything drops to organ and a cappella voices. Outro: a final soaring vocal run fading into a held chord.",
+        },
+        "阿卡贝拉 / A Cappella": {
+            "global": "A cappella. Pure vocal, no instruments, intimate and expressive throughout. Layered human voices, close harmonies, vocal bass and beatbox percussion. Clean production: close-miked voices, natural ambience, crisp vocal clarity.",
+            "vocal": "Layered vocal arrangement with a clear lead voice, tight four-part harmonies, and vocal bass or beatbox percussion, all human voices with no instruments.",
+            "arrangement": "All vocals: lead melody, close harmonies, vocal bass line, and mouth-percussion. Intro: a vocal bass groove. Verses: lead voice over harmony pads. Chorus: full vocal stack in rich harmony. Breakdown: solo voice and beatbox. Outro: voices fade one by one into a final held chord.",
+        },
     }
 
     # 官方 genre-router 18 家族未覆盖、节点额外补充的风格（其余均标 [官方]）
@@ -225,45 +235,66 @@ class JZL_MiniMaxMusicCaption:
         "不指定 / Unspecified": "",
         "慢速 60-75 / Slow 60-75 BPM": "60-75 BPM",
         "中速 80-100 / Mid 80-100 BPM": "80-100 BPM",
+        "中快 100-110 / Mid-Fast 100-110 BPM": "100-110 BPM",
         "快速 110-135 / Fast 110-135 BPM": "110-135 BPM",
         "极快 140+ / Very Fast 140+ BPM": "140+ BPM",
     }
 
     _KEY_HINTS = {
         "不指定 / Unspecified": "",
-        # 调式/音阶
-        "大调 / Major": "major key",
-        "小调 / Minor": "minor key",
-        "五声音阶 / Pentatonic": "pentatonic scale",
+        "C / C": "C",
+        "降D / D-flat": "D-flat",
+        "D / D": "D",
+        "降E / E-flat": "E-flat",
+        "E / E": "E",
+        "F / F": "F",
+        "升F / F-sharp": "F-sharp",
+        "G / G": "G",
+        "降A / A-flat": "A-flat",
+        "A / A": "A",
+        "降B / B-flat": "B-flat",
+        "B / B": "B",
+    }
+
+    _SCALE_HINTS = {
+        "不指定 / Unspecified": "",
+        # 自然大/小调
+        "大调 / Major": "major",
+        "小调 / Minor": "minor",
+        # 和声/旋律变体
+        "和声小调 / Harmonic Minor": "harmonic minor",
+        "旋律小调 / Melodic Minor": "melodic minor",
+        "和声大调 / Harmonic Major": "harmonic major",
+        # 教会调式
+        "多利亚 / Dorian": "Dorian",
+        "弗里吉亚 / Phrygian": "Phrygian",
+        "利底亚 / Lydian": "Lydian",
+        "混合利底亚 / Mixolydian": "Mixolydian",
+        "洛克里亚 / Locrian": "Locrian",
+        # 五声/布鲁斯
+        "大调五声 / Major Pentatonic": "major pentatonic",
+        "小调五声 / Minor Pentatonic": "minor pentatonic",
+        "布鲁斯 / Blues Scale": "blues scale",
+        # 其他
+        "中国五声 / Chinese Pentatonic": "Chinese pentatonic",
         "爵士扩展 / Jazzy Extensions": "major scale with jazzy extensions",
-        "多利亚 / Dorian": "Dorian mode",
-        "混合利底亚 / Mixolydian": "Mixolydian mode",
-        # 12 大调
-        "C 大调 / C Major": "C major",
-        "降D 大调 / D-flat Major": "D-flat major",
-        "D 大调 / D Major": "D major",
-        "降E 大调 / E-flat Major": "E-flat major",
-        "E 大调 / E Major": "E major",
-        "F 大调 / F Major": "F major",
-        "升F 大调 / F-sharp Major": "F-sharp major",
-        "G 大调 / G Major": "G major",
-        "降A 大调 / A-flat Major": "A-flat major",
-        "A 大调 / A Major": "A major",
-        "降B 大调 / B-flat Major": "B-flat major",
-        "B 大调 / B Major": "B major",
-        # 12 小调
-        "C 小调 / C Minor": "C minor",
-        "升C 小调 / C-sharp Minor": "C-sharp minor",
-        "D 小调 / D Minor": "D minor",
-        "降E 小调 / E-flat Minor": "E-flat minor",
-        "E 小调 / E Minor": "E minor",
-        "F 小调 / F Minor": "F minor",
-        "升F 小调 / F-sharp Minor": "F-sharp minor",
-        "G 小调 / G Minor": "G minor",
-        "升G 小调 / G-sharp Minor": "G-sharp minor",
-        "A 小调 / A Minor": "A minor",
-        "降B 小调 / B-flat Minor": "B-flat minor",
-        "B 小调 / B Minor": "B minor",
+    }
+
+    # 只选调式不选调号时，把裸调式名补成完整短语
+    _BARE_SCALE_PHRASES = {
+        "major": "major key",
+        "minor": "minor key",
+        "harmonic minor": "harmonic minor scale",
+        "melodic minor": "melodic minor scale",
+        "harmonic major": "harmonic major scale",
+        "Dorian": "Dorian mode",
+        "Phrygian": "Phrygian mode",
+        "Lydian": "Lydian mode",
+        "Mixolydian": "Mixolydian mode",
+        "Locrian": "Locrian mode",
+        "major pentatonic": "major pentatonic scale",
+        "minor pentatonic": "minor pentatonic scale",
+        "Chinese pentatonic": "Chinese pentatonic scale",
     }
 
     _MOOD_HINTS = {
@@ -281,6 +312,10 @@ class JZL_MiniMaxMusicCaption:
         "希望 / Hopeful": "Hopeful and uplifting",
         "迷幻 / Psychedelic": "Psychedelic and trippy",
         "庄严 / Solemn": "Solemn and reverent",
+        "怀旧 / Nostalgic": "Nostalgic and bittersweet",
+        "欢庆 / Celebratory": "Celebratory and jubilant",
+        "治愈 / Healing": "Healing and comforting",
+        "欣快 / Euphoric": "Euphoric and cathartic",
     }
 
     _SCENE_HINTS = {
@@ -311,6 +346,7 @@ class JZL_MiniMaxMusicCaption:
         "童声 / Child Vocal": "child's voice",
         "柔和中性 / Soft Androgynous Vocal": "soft androgynous vocal",
         "合唱 / Choir": "layered choir",
+        "纯人声 / Acappella (Vocals Only)": "a pure acappella vocal performance with no instrumental accompaniment",
     }
 
     _REGISTER_HINTS = {
@@ -320,6 +356,7 @@ class JZL_MiniMaxMusicCaption:
         "女低音 / Alto": "alto",
         "男高音 / Tenor": "tenor",
         "男中音 / Baritone": "baritone",
+        "男中高音 / Baritenor": "baritenor",
         "男低音 / Bass": "bass",
     }
 
@@ -335,6 +372,8 @@ class JZL_MiniMaxMusicCaption:
         "磁性 / Magnetic": "magnetic, rich",
         "慵懒 / Lazy Laid-Back": "lazy, laid-back",
         "纯净 / Pure Clean": "pure, clean",
+        "丝绒 / Velvety": "velvety, smooth",
+        "蜜糖 / Honeyed": "honeyed, warm",
     }
 
     _VOCAL_STYLE_HINTS = {
@@ -345,7 +384,10 @@ class JZL_MiniMaxMusicCaption:
         "呼麦 / Throat Singing": "throat singing (khoomei)",
         "民谣 / Folk Storytelling": "folk storytelling delivery",
         "美声 / Bel Canto": "operatic bel canto delivery",
+        "流行/通俗 / Pop Vocal": "pop vocal delivery",
+        "民族唱法 / Chinese Folk Singing": "Chinese folk-style singing technique",
         "颤音 / Vibrato": "expressive vibrato",
+        "断奏 / Staccato": "staccato phrasing",
         "戏腔 / Chinese Opera Style": "Chinese opera-style delivery with ornamented vibrato and slides",
         "吟唱 / Chant": "chant-like, repetitive phrasing",
         "约德尔 / Yodeling": "yodeling with rapid register breaks",
@@ -375,6 +417,9 @@ class JZL_MiniMaxMusicCaption:
         "温暖模拟 / Warm Analog": "Warm analog production: soft saturation, gentle tube warmth, slightly rounded transients.",
         "磁带 Lo-fi / Tape Lo-fi": "Tape lo-fi production: heavy tape hiss, wow-and-flutter pitch wobble, low-passed dusty mix, everything slightly detuned and cozy.",
         "黑胶噪点 / Vinyl Crackle": "Vinyl production: constant crackle and surface noise, warm low end, vintage EQ curve.",
+        "宽广开阔 / Wide Spacious": "a wide, spacious mix with an expansive stereo image",
+        "大厅混响 / Hall Reverb": "a mix drenched in natural hall reverb",
+        "现场房间 / Live Room": "a natural live-room sound with realistic space",
     }
 
     _METER_HINTS = {
@@ -413,6 +458,50 @@ class JZL_MiniMaxMusicCaption:
         "含 Breakdown / With Breakdown": "with a stripped-down breakdown before the final chorus",
     }
 
+    # 官方 Arrangement 支持指定 primary / secondary instruments
+    _INSTRUMENT_HINTS = {
+        # 键盘
+        "钢琴 / Piano": "piano",
+        "电钢琴 / Electric Piano": "electric piano",
+        "管风琴 / Organ": "organ",
+        "合成器 / Synthesizer": "synthesizer",
+        # 弦乐
+        "小提琴 / Violin": "violin",
+        "中提琴 / Viola": "viola",
+        "大提琴 / Cello": "cello",
+        "弦乐组 / Strings": "strings",
+        "竖琴 / Harp": "harp",
+        # 木管
+        "长笛 / Flute": "flute",
+        "单簧管 / Clarinet": "clarinet",
+        "双簧管 / Oboe": "oboe",
+        "萨克斯 / Saxophone": "saxophone",
+        # 铜管
+        "小号 / Trumpet": "trumpet",
+        "长号 / Trombone": "trombone",
+        "法国号 / French Horn": "French horn",
+        # 吉他/贝斯
+        "原声吉他 / Acoustic Guitar": "acoustic guitar",
+        "电吉他 / Electric Guitar": "electric guitar",
+        "贝斯 / Bass": "bass",
+        # 打击
+        "鼓 / Drums": "drums",
+        "打击乐 / Percussion": "percussion",
+        # 中国民族
+        "古筝 / Guzheng": "guzheng",
+        "古琴 / Guqin": "guqin",
+        "笛子 / Dizi": "dizi",
+    }
+
+    # 指定主奏乐器时使用的通用分段时间线（不含具体乐器名，避免与 override 冲突）
+    _GENERIC_TIMELINE = (
+        "Intro: a sparse opening establishes the mood. "
+        "Verses: the lead melody unfolds over a restrained groove. "
+        "Chorus: the texture opens up with fuller dynamics and richer harmony. "
+        "Bridge: a stripped-back moment builds tension. "
+        "Outro: the final phrase dissolves into silence."
+    )
+
     @classmethod
     def INPUT_TYPES(s):
         # 官方优先，补充靠后；组内保持定义顺序
@@ -421,6 +510,12 @@ class JZL_MiniMaxMusicCaption:
         fusion_list = ["不指定 / Unspecified"] + style_list
         return {
             "required": {
+                "高级参数": ("BOOLEAN", {
+                    "default": False,
+                    "label_on": "高级参数 ▾",
+                    "label_off": "高级参数 ▸",
+                    "tooltip": "开启后显示风格融合/拍号/情绪演变/段落结构/声部音区等可选高级项",
+                }),
                 "音乐风格": (style_list, {
                     "default": style_list[0],
                     "tooltip": "官方 Structured Caption 三段式：Global Metadata（genre/BPM/key/拍号/情绪/情绪演变/场景/制作）/ Vocal Details（配置/音区/音色/唱法/和声/效果）/ Arrangement（分段时间线）",
@@ -430,22 +525,25 @@ class JZL_MiniMaxMusicCaption:
                     "tooltip": "官方 genre-router 支持双风格融合，副风格以 influences 形式并入 Global Metadata",
                 }),
                 "速度": (list(s._BPM_HINTS.keys()), {"default": "不指定 / Unspecified"}),
-                "调性": (list(s._KEY_HINTS.keys()), {"default": "不指定 / Unspecified"}),
+                "调式": (list(s._SCALE_HINTS.keys()), {"default": "不指定 / Unspecified"}),
+                "调号": (list(s._KEY_HINTS.keys()), {"default": "不指定 / Unspecified"}),
                 "拍号": (list(s._METER_HINTS.keys()), {"default": "不指定 / Unspecified"}),
                 "情绪氛围": (list(s._MOOD_HINTS.keys()), {"default": "不指定 / Unspecified"}),
                 "情绪演变": (list(s._CONTOUR_HINTS.keys()), {"default": "不指定 / Unspecified"}),
                 "使用场景": (list(s._SCENE_HINTS.keys()), {"default": "不指定 / Unspecified"}),
                 "段落结构": (list(s._STRUCTURE_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
+                "主奏乐器": (["跟随风格 / Follow Style"] + list(s._INSTRUMENT_HINTS.keys()), {"default": "跟随风格 / Follow Style", "tooltip": "官方 Arrangement 支持指定 primary instrument（主奏乐器）"}),
+                "辅助乐器": (["跟随风格 / Follow Style", "无 / None"] + list(s._INSTRUMENT_HINTS.keys()), {"default": "跟随风格 / Follow Style", "tooltip": "官方 Arrangement 支持指定 supporting instrument；选「无」配合主奏乐器=独奏"}),
+                "制作质感": (list(s._TEXTURE_HINTS.keys()), {
+                    "default": "跟随风格 / Follow Style",
+                    "tooltip": "覆盖 caption 的制作质感描述。官方节点 cfg_scale（默认 1.5，CFG 引导强度）与 top_k（默认 50，采样候选截断）请在其高级参数中设置，本节点不改动",
+                }),
                 "人声配置": (list(s._VOCAL_CONFIG_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
                 "声部音区": (list(s._REGISTER_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
                 "人声音色": (list(s._VOCAL_TIMBRE_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
                 "人声唱法": (list(s._VOCAL_STYLE_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
                 "和声伴唱": (list(s._HARMONY_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
                 "人声效果": (list(s._VOCAL_FX_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
-                "制作质感": (list(s._TEXTURE_HINTS.keys()), {
-                    "default": "跟随风格 / Follow Style",
-                    "tooltip": "覆盖 caption 的制作质感描述。官方节点 cfg_scale（默认 1.5，CFG 引导强度）与 top_k（默认 50，采样候选截断）请在其高级参数中设置，本节点不改动",
-                }),
             }
         }
 
@@ -476,9 +574,7 @@ class JZL_MiniMaxMusicCaption:
             return subject + " with " + " and ".join(clauses)
         return subject
 
-    def build(self, 音乐风格: str, 风格融合: str, 速度: str, 调性: str, 拍号: str, 情绪氛围: str,
-              情绪演变: str, 使用场景: str, 段落结构: str, 人声配置: str, 声部音区: str, 人声音色: str,
-              人声唱法: str, 和声伴唱: str, 人声效果: str, 制作质感: str) -> tuple[str]:
+    def _resolve_style(self, 音乐风格: str) -> dict:
         style_key = 音乐风格
         for prefix in ("[官方] ", "[补充] "):
             if style_key.startswith(prefix):
@@ -487,11 +583,24 @@ class JZL_MiniMaxMusicCaption:
         style = self._STYLES.get(style_key)
         if style is None:
             raise ValueError(f'未知音乐风格: "{音乐风格}"')
+        return style
 
-        # Global Metadata：风格本体 + 可选维度追加（BPM/key/拍号/情绪/情绪演变/场景/融合/质感）
+    def _compose_global(self, style: dict, 风格融合: str, 速度: str, 调式: str, 调号: str,
+                        拍号: str, 情绪氛围: str, 情绪演变: str, 使用场景: str, 制作质感: str) -> str:
+        key = self._KEY_HINTS.get(调号, "")
+        scale = self._SCALE_HINTS.get(调式, "")
+        if key and scale:
+            key_hint = f"{key} {scale}"
+        elif key:
+            key_hint = f"key of {key}"
+        elif scale:
+            key_hint = self._BARE_SCALE_PHRASES.get(scale, scale)
+        else:
+            key_hint = ""
+
         extras = [h for h in (
             self._BPM_HINTS.get(速度, ""),
-            self._KEY_HINTS.get(调性, ""),
+            key_hint,
             self._METER_HINTS.get(拍号, ""),
             self._MOOD_HINTS.get(情绪氛围, ""),
             self._CONTOUR_HINTS.get(情绪演变, ""),
@@ -504,19 +613,183 @@ class JZL_MiniMaxMusicCaption:
             extras.append(texture)
 
         joined = "; ".join(extras).rstrip(".").strip()
-        global_text = f"{style['global'].rstrip()} {joined}." if joined else style["global"].rstrip()
+        return f"{style['global'].rstrip()} {joined}." if joined else style["global"].rstrip()
 
-        # Vocal Details：配置/声部音区/音色/唱法 + 和声；全部跟随风格时用风格自带文案
+    def _compose_arrangement(self, style: dict, 段落结构: str, 主奏乐器: str, 辅助乐器: str,
+                             vocal_only: bool = False) -> str:
+        if vocal_only:
+            arrangement_text = (
+                "The human voice serves as the sole instrument, fulfilling all melodic, harmonic, "
+                "and rhythmic roles. Layered vocal harmonies carry the harmony while vocal percussion "
+                "drives the rhythm. There is no traditional instrumental accompaniment."
+            )
+            structure = self._STRUCTURE_HINTS.get(段落结构, "")
+            if structure:
+                arrangement_text = f"{arrangement_text} {structure}."
+            return arrangement_text
+        lead = self._INSTRUMENT_HINTS.get(主奏乐器, "")
+        support = "none" if 辅助乐器 == "无 / None" else self._INSTRUMENT_HINTS.get(辅助乐器, "")
+        if lead:
+            if support and support != "none":
+                arrangement_text = (
+                    f"Instrumentation override: {lead} as the lead instrument, supported by {support}. "
+                    + self._GENERIC_TIMELINE
+                )
+            elif support == "none":
+                arrangement_text = (
+                    f"Instrumentation override: {lead} as the sole lead instrument, with no other melodic instruments. "
+                    f"A solo {lead} piece: the {lead} alone carries every melody with expressive phrasing. "
+                    "Opening: a slow lyrical phrase. Middle: the melody rises and falls with ornamentation. "
+                    "Closing: a final sustained note decays into silence."
+                )
+            else:
+                arrangement_text = (
+                    f"Instrumentation override: {lead} as the lead instrument. "
+                    + self._GENERIC_TIMELINE
+                )
+        elif support and support != "none":
+            arrangement_text = f"Instrumentation: {support} as a supporting instrument. " + style["arrangement"].rstrip()
+        else:
+            arrangement_text = style["arrangement"].rstrip()
+
+        structure = self._STRUCTURE_HINTS.get(段落结构, "")
+        if structure:
+            arrangement_text = f"{arrangement_text} {structure}."
+        return arrangement_text
+
+    def build(self, 高级参数: bool, 音乐风格: str, 风格融合: str, 速度: str, 调式: str, 调号: str,
+              拍号: str, 情绪氛围: str, 情绪演变: str, 使用场景: str, 段落结构: str, 主奏乐器: str,
+              辅助乐器: str, 制作质感: str, 人声配置: str, 声部音区: str, 人声音色: str, 人声唱法: str,
+              和声伴唱: str, 人声效果: str) -> tuple[str]:
+        style = self._resolve_style(音乐风格)
+
+        global_text = self._compose_global(style, 风格融合, 速度, 调式, 调号, 拍号, 情绪氛围, 情绪演变, 使用场景, 制作质感)
+
         vocal_text = self._compose_vocal(style, 人声配置, 声部音区, 人声音色, 人声唱法, 和声伴唱)
         vocal_fx = self._VOCAL_FX_HINTS.get(人声效果, "")
         if vocal_fx and 人声配置 != "无人声 / Instrumental (No Vocals)":
             vocal_text = f"{vocal_text.rstrip()} {vocal_fx}."
+        vocal_text = vocal_text.rstrip()
+        if not vocal_text.endswith("."):
+            vocal_text += "."
 
-        # Arrangement：风格自带分段时间线 + 可选段落结构指令
-        arrangement_text = style["arrangement"].rstrip()
-        structure = self._STRUCTURE_HINTS.get(段落结构, "")
-        if structure:
-            arrangement_text = f"{arrangement_text} {structure}."
+        vocal_only = 人声配置 == "纯人声 / Acappella (Vocals Only)"
+        arrangement_text = self._compose_arrangement(style, 段落结构, 主奏乐器, 辅助乐器, vocal_only=vocal_only)
+
+        caption = (
+            f"Global Metadata: {global_text}\n\n"
+            f"Vocal Details: {vocal_text}\n\n"
+            f"Arrangement: {arrangement_text}"
+        )
+        return (caption,)
+
+
+class JZL_MiniMaxMusicCaptionDuet(JZL_MiniMaxMusicCaption):
+    """MiniMax Music3 双人版提示词预设 — 两个角色各自完整的人声参数 + 角色分工"""
+
+    _ROLE_ASSIGN_HINTS = {
+        "不分主次 / Equal Lead": "the two voices share the lead equally",
+        "A主B和 / A Lead B Harmony": "voice A sings the lead melody while voice B provides harmonies",
+        "B主A和 / B Lead A Harmony": "voice B sings the lead melody while voice A provides harmonies",
+        "A主歌B副歌 / A Verses B Chorus": "voice A sings the verses while voice B takes the chorus",
+        "B主歌A副歌 / B Verses A Chorus": "voice B sings the verses while voice A takes the chorus",
+        "轮流对唱 / Call-and-Response": "the two voices alternate in call-and-response",
+    }
+
+    _ROLE_CONFIG_HINTS = {
+        "女声 / Female Vocal": "female vocal",
+        "男声 / Male Vocal": "male vocal",
+        "童声 / Child Vocal": "child's voice",
+        "柔和中性 / Soft Androgynous Vocal": "soft androgynous vocal",
+    }
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        _keys = sorted(cls._STYLES.keys(), key=lambda k: k in cls._SUPPLEMENT_STYLES)
+        style_list = [("[官方] " if k not in cls._SUPPLEMENT_STYLES else "[补充] ") + k for k in _keys]
+        fusion_list = ["不指定 / Unspecified"] + style_list
+        return {
+            "required": {
+                "高级参数": ("BOOLEAN", {
+                    "default": False,
+                    "label_on": "高级参数 ▾",
+                    "label_off": "高级参数 ▸",
+                    "tooltip": "开启后显示风格融合/拍号/情绪演变/段落结构等可选高级项",
+                }),
+                "音乐风格": (style_list, {"default": style_list[0]}),
+                "风格融合": (fusion_list, {"default": "不指定 / Unspecified"}),
+                "速度": (list(cls._BPM_HINTS.keys()), {"default": "不指定 / Unspecified"}),
+                "调式": (list(cls._SCALE_HINTS.keys()), {"default": "不指定 / Unspecified"}),
+                "调号": (list(cls._KEY_HINTS.keys()), {"default": "不指定 / Unspecified"}),
+                "拍号": (list(cls._METER_HINTS.keys()), {"default": "不指定 / Unspecified"}),
+                "情绪氛围": (list(cls._MOOD_HINTS.keys()), {"default": "不指定 / Unspecified"}),
+                "情绪演变": (list(cls._CONTOUR_HINTS.keys()), {"default": "不指定 / Unspecified"}),
+                "使用场景": (list(cls._SCENE_HINTS.keys()), {"default": "不指定 / Unspecified"}),
+                "段落结构": (list(cls._STRUCTURE_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
+                "主奏乐器": (["跟随风格 / Follow Style"] + list(cls._INSTRUMENT_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
+                "辅助乐器": (["跟随风格 / Follow Style", "无 / None"] + list(cls._INSTRUMENT_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
+                "制作质感": (list(cls._TEXTURE_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
+                "纯人声无伴奏": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "开启后整首为纯人声无伴奏（acappella），忽略主奏/辅助乐器",
+                }),
+                "角色分工": (list(cls._ROLE_ASSIGN_HINTS.keys()), {"default": "不分主次 / Equal Lead"}),
+                "角色A配置": (list(cls._ROLE_CONFIG_HINTS.keys()), {"default": "女声 / Female Vocal"}),
+                "角色A音区": (list(cls._REGISTER_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
+                "角色A音色": (list(cls._VOCAL_TIMBRE_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
+                "角色A唱法": (list(cls._VOCAL_STYLE_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
+                "角色B配置": (list(cls._ROLE_CONFIG_HINTS.keys()), {"default": "男声 / Male Vocal"}),
+                "角色B音区": (list(cls._REGISTER_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
+                "角色B音色": (list(cls._VOCAL_TIMBRE_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
+                "角色B唱法": (list(cls._VOCAL_STYLE_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
+                "和声伴唱": (list(cls._HARMONY_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
+                "人声效果": (list(cls._VOCAL_FX_HINTS.keys()), {"default": "跟随风格 / Follow Style"}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("caption",)
+    FUNCTION = "build"
+    CATEGORY = "JZL/MiniMax"
+
+    def _compose_role_vocal(self, config_key: str, register_key: str, timbre_key: str, style_key: str) -> str:
+        config = self._ROLE_CONFIG_HINTS.get(config_key, "")
+        register = self._REGISTER_HINTS.get(register_key, "")
+        timbre = self._VOCAL_TIMBRE_HINTS.get(timbre_key, "")
+        delivery = self._VOCAL_STYLE_HINTS.get(style_key, "")
+        parts = [p for p in (timbre, register, config) if p]
+        subject = " ".join(parts).strip() if parts else "lead vocal"
+        clauses = [c for c in (delivery,) if c]
+        if clauses:
+            return subject + " with " + " and ".join(clauses)
+        return subject
+
+    def build(self, 高级参数: bool, 音乐风格: str, 风格融合: str, 速度: str, 调式: str, 调号: str,
+              拍号: str, 情绪氛围: str, 情绪演变: str, 使用场景: str, 段落结构: str, 主奏乐器: str,
+              辅助乐器: str, 制作质感: str, 纯人声无伴奏: bool, 角色分工: str, 角色A配置: str, 角色A音区: str, 角色A音色: str,
+              角色A唱法: str, 角色B配置: str, 角色B音区: str, 角色B音色: str, 角色B唱法: str,
+              和声伴唱: str, 人声效果: str) -> tuple[str]:
+        style = self._resolve_style(音乐风格)
+        global_text = self._compose_global(style, 风格融合, 速度, 调式, 调号, 拍号, 情绪氛围, 情绪演变, 使用场景, 制作质感)
+
+        a = self._compose_role_vocal(角色A配置, 角色A音区, 角色A音色, 角色A唱法)
+        b = self._compose_role_vocal(角色B配置, 角色B音区, 角色B音色, 角色B唱法)
+        assign = self._ROLE_ASSIGN_HINTS.get(角色分工, "")
+        harmony = self._HARMONY_HINTS.get(和声伴唱, "")
+        fx = self._VOCAL_FX_HINTS.get(人声效果, "")
+
+        pieces = [f"Voice A: {a}", f"Voice B: {b}"]
+        if assign:
+            pieces.append(assign)
+        if harmony:
+            pieces.append(harmony)
+        vocal_text = "Two voices in duet. " + "; ".join(pieces) + "."
+        if 纯人声无伴奏:
+            vocal_text = "A pure acappella duet with no instrumental accompaniment. " + vocal_text
+        if fx:
+            vocal_text = vocal_text[:-1] + f" {fx}."
+
+        arrangement_text = self._compose_arrangement(style, 段落结构, 主奏乐器, 辅助乐器, vocal_only=纯人声无伴奏)
 
         caption = (
             f"Global Metadata: {global_text}\n\n"

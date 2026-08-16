@@ -1,5 +1,5 @@
 /**
- * XB MiniMax 分镜处理中心 — ComfyUI 前端扩展
+ * XB MiniMax 分段处理中心 — ComfyUI 前端扩展
  * =============================================
  * 重拍模式: 链式 mute + 文件选择器(默认打开故事输出目录)
  */
@@ -61,14 +61,14 @@ app.registerExtension({
                 wMode.callback = function (value) {
                     origCb?.apply?.(this, arguments);
                     muteUpstream(self, value);
-                    const bt = self.widgets?.find(w => w.name === "选择要重拍的分镜");
+                    const bt = self.widgets?.find(w => w.name === "选择要重拍的分段");
                     if (bt?.inputEl) bt.inputEl.style.display = value ? "inline-block" : "none";
                 };
             }
 
             // 文件选择按钮
             setTimeout(() => {
-                const btn = self.addWidget("button", "选择要重拍的分镜", "📁 选择要重拍的分镜", async () => {
+                const btn = self.addWidget("button", "选择要重拍的分段", "📁 选择要重拍的分段", async () => {
                     // 从 Python 后端获取默认目录
                     let defaultDir = "";
                     try {

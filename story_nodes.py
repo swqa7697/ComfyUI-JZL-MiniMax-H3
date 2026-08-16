@@ -1,10 +1,10 @@
 """JZL MiniMax 一键漫剧创作 — 节点定义（V1 经典 API）
 
-总线信号链: 剧本编剧 → 分镜词生成器 → 分镜处理中心
-调度分支: 分镜处理中心 → 场景元素调度 / 视频调度 / 音频调度
+总线信号链: 剧本编剧 → 分段词生成器 → 分段处理中心
+调度分支: 分段处理中心 → 场景元素调度 / 视频调度 / 音频调度
 
 本文件包含 4 个纯逻辑节点（不依赖 llama-cpp）：
-  1. JZL_MiniMax_ShotFormatter    分镜处理中心
+  1. JZL_MiniMax_ShotFormatter    分段处理中心
   2. JZL_MiniMax_SceneDispatcher  场景元素调度
   3. JZL_MiniMax_VideoDispatcher  视频调度
   4. JZL_MiniMax_AudioDispatcher  音频调度
@@ -48,10 +48,10 @@ def _get_output_dir(story_name="", subfolder=""):
 
 
 def _find_latest_version(base_dir):
-    """找到最新版本文件夹(第NNN次分镜词), 返回路径和下一个编号"""
+    """找到最新版本文件夹(第NNN次分段词), 返回路径和下一个编号"""
     if not os.path.isdir(base_dir):
-        return os.path.join(base_dir, "第001次分镜词"), 1
-    pat = re.compile(r'第(\d{3})次分镜词')
+        return os.path.join(base_dir, "第001次分段词"), 1
+    pat = re.compile(r'第(\d{3})次分段词')
     versions = []
     for f in os.listdir(base_dir):
         m = pat.match(f)
@@ -60,7 +60,7 @@ def _find_latest_version(base_dir):
     if versions:
         versions.sort(reverse=True)
         return os.path.join(base_dir, versions[0][1]), versions[0][0] + 1
-    return os.path.join(base_dir, "第001次分镜词"), 1
+    return os.path.join(base_dir, "第001次分段词"), 1
 
 
 def _parse_four_in_one(content):
@@ -79,8 +79,104 @@ def _parse_four_in_one(content):
     return h3, scene, video, audio
 
 
+def _match_name(slot_name, node_name):
+    """模糊匹配：slot 素材名与上游节点名互相包含，或分词后有交集。"""
+    s = (slot_name or "").strip().lower()
+    n = (node_name or "").strip().lower()
+    if not s or not n:
+        return False
+    if s in n or n in s:
+        return True
+    s_tokens = {t for t in re.split(r'[-\s_（(）):：,，、/]+', s) if t}
+    n_tokens = {t for t in re.split(r'[-\s_（(）):：,，、/]+', n) if t}
+    return bool(s_tokens & n_tokens)
+
+
+def _parse_slots(raw):
+    """解析调度指令为 slots 数组。
+
+    兼容三种形态（最多递归 3 层）：
+    - 字符串 JSON：'{"shot":1,"slots":[...]}'
+    - list：分段处理中心输出的 ['{"shot":1,...}', ...] → 取第一项
+    - dict：已解析的 {"shot":1,"slots":[...]}
+    解析失败返回 []。
+    """
+    for _ in range(3):
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                return []
+        elif isinstance(raw, (list, tuple)):
+            if not raw:
+                return []
+            raw = raw[0]
+        elif isinstance(raw, dict):
+            return raw.get("slots", [])
+        else:
+            return []
+    return []
+
+
+def _is_empty_audio(value):
+    """判断音频是否为无效空音频（无波形或无采样点），空音频视为未接。"""
+    if not isinstance(value, dict):
+        return False
+    waveform = value.get("waveform")
+    if waveform is None or not isinstance(waveform, torch.Tensor):
+        return True
+    return waveform.numel() == 0 or waveform.shape[-1] == 0
+
+
+_TYPE_PREFIX = {
+    "场景": "场景", "角色": "角色", "道具": "道具", "视频": "视频", "音频": "音频",
+    "scene": "场景", "character": "角色", "prop": "道具", "video": "视频", "audio": "音频",
+}
+
+
+def normalize_slots(info_json):
+    """规范化调度指令 slots，修复 LLM 输出的小错误（不可解析的输入原样返回）：
+
+    - 「类型:字母」（如「道具:C」）→「类型:类型+字母」（「道具:道具C」）
+    - 尾冒号/尾空格自动去除（如「音频:D:」→「音频:音频D」）
+    """
+    try:
+        d = json.loads(info_json) if isinstance(info_json, str) else (info_json or {})
+    except Exception:
+        return info_json
+    if not isinstance(d, dict):
+        return info_json
+    slots = d.get("slots") or []
+    if not isinstance(slots, list):
+        return info_json
+    changed = False
+    normalized = []
+    for slot in slots:
+        if not isinstance(slot, str) or ":" not in slot:
+            normalized.append(slot)
+            continue
+        typ, name = slot.split(":", 1)
+        typ = typ.strip()
+        name = name.strip().rstrip(":：")
+        prefix = _TYPE_PREFIX.get(typ.lower() if typ.isascii() else typ)
+        if prefix and re.fullmatch(r'[A-H]', name, re.IGNORECASE):
+            normalized.append(f"{typ}:{prefix}{name}")
+            changed = True
+            continue
+        fixed = f"{typ}:{name}"
+        if slot != fixed:
+            normalized.append(fixed)
+            changed = True
+            continue
+        normalized.append(slot)
+    if changed:
+        d["slots"] = normalized
+        return json.dumps(d, ensure_ascii=False)
+    return info_json
+
+
 # ═══════════════════════════════════════════════════════════════
-#  节点 1: 分镜处理中心
+#  节点 1: 分段处理中心
 # ═══════════════════════════════════════════════════════════════
 
 class JZL_MiniMax_ShotFormatter:
@@ -93,7 +189,6 @@ class JZL_MiniMax_ShotFormatter:
                 "reshoot_mode": ("BOOLEAN", {"default": False, "label_on": "重拍", "label_off": "正常"}),
             },
             "optional": {
-                "bus": ("*", {"force_input": True}),
                 "shot_text": ("*", {"force_input": True}),
                 "_reshoot_path": ("STRING", {"default": ""}),
             },
@@ -109,7 +204,17 @@ class JZL_MiniMax_ShotFormatter:
     def _parse_shots(text):
         return [{"raw": b.strip()} for b in re.findall(r'\[SHOT_START\](.*?)\[SHOT_END\]', text or "", re.DOTALL)]
 
-    def execute(self, reshoot_mode, bus=None, shot_text=None, _reshoot_path=None):
+    @staticmethod
+    def _rebuild_scene(block, shot_num):
+        """LLM 未输出 SCENE_INSTRUCTION 时的兜底。
+
+        分段信息里的「**场景**/**角色**/**道具**」是描述/素材名，不是槽位名
+        （槽位名是 场景A~H/角色A~H/道具A~H），无法可靠反推映射。
+        故留空 slots，由调度节点输出空、用户手动补线，避免用错误槽位名导致错配。
+        """
+        return json.dumps({"shot": shot_num, "slots": []}, ensure_ascii=False)
+
+    def execute(self, reshoot_mode, shot_text=None, _reshoot_path=None):
         # ── 重拍: 只读选中的本地文件 ──
         if reshoot_mode and _reshoot_path and os.path.isfile(_reshoot_path):
             content = open(_reshoot_path, "r", encoding="utf-8").read()
@@ -120,75 +225,31 @@ class JZL_MiniMax_ShotFormatter:
             audio_list = [aud or "{}"]
             return {"ui": {"text": h3_list}, "result": (h3_list, scene_list, video_list, audio_list)}
 
-        # ── 正常模式: 优先从总线读取(无磁盘IO), 回退到磁盘 ──
-        try:
-            bus_data = json.loads(bus) if isinstance(bus, str) else (bus or {})
-        except Exception:
-            bus_data = {}
+        # ── 正常模式: 从剧本输出（shot_text）解析 [SHOT_START] 块 + 提取四段 ──
+        shots = self._parse_shots(shot_text)
+        if not shots:
+            return {"ui": {"text": [""]}, "result": ([""], ["{}"], ["{}"], ["{}"])}
 
-        h3_list = bus_data.get("h3_prompts", [])
-        scene_list = bus_data.get("scene_infos", [])
-        video_list = bus_data.get("video_infos", [])
-        audio_list = bus_data.get("audio_infos", [])
-
-        if not h3_list:
-            # 磁盘回退
-            story_name = bus_data.get("story_name", "")
-            shots = self._parse_shots(shot_text)
-            if not shots:
-                return {"ui": {"text": [""]}, "result": ([""], ["{}"], ["{}"], ["{}"])}
-            shot_count = len(shots)
-            h3_list, scene_list, video_list, audio_list = [], [], [], []
-
-            base_dir = _get_output_dir(story_name, "H3提示词")
-            latest_dir, _ = _find_latest_version(base_dir)
-            pattern = re.compile(r'(\d{3})镜头_.*\.txt')
-            shot_files = {}
-            if os.path.isdir(latest_dir):
-                for f in sorted(os.listdir(latest_dir)):
-                    m = pattern.match(f)
-                    if m:
-                        shot_files[int(m.group(1))] = os.path.join(latest_dir, f)
-
-            for i in range(1, shot_count + 1):
-                h3, scene, vid, aud = "[未找到H3提示词]", "{}", "{}", "{}"
-                if i in shot_files:
-                    content = open(shot_files[i], "r", encoding="utf-8").read()
-                    h, s, vv, aa = _parse_four_in_one(content)
-                    if h:
-                        h3 = h
-                    if s:
-                        scene = s
-                    if vv:
-                        vid = vv
-                    if aa:
-                        aud = aa
-                if scene == "{}" and i <= len(shots):
-                    block = shots[i - 1]["raw"]
-                    chars, bg, props, cam, act = "无", "", "无", "固定", ""
-                    for pat_key, pat in [("chars", r'\*\*角色\*\*[：:]\s*(.+?)(?:\n|$)'),
-                                         ("bg", r'\*\*场景\*\*[：:]\s*(.+?)(?:\n|$)'),
-                                         ("props", r'\*\*道具\*\*[：:]\s*(.+?)(?:\n|$)'),
-                                         ("cam", r'\*\*运镜\*\*[：:]\s*(.+?)(?:\n|$)'),
-                                         ("act", r'\*\*动作描述\*\*[：:]\s*(.+?)(?:\n|$)')]:
-                        m = re.search(pat, block)
-                        if m:
-                            locals()[pat_key] = m.group(1).strip()
-                    scene = json.dumps({"shot": i, "characters": chars or "无", "scene": bg, "props": props or "无"}, ensure_ascii=False)
-                    vid = json.dumps({"shot": i, "camera": cam or "固定", "action": act, "video_hint": ""}, ensure_ascii=False)
-                    aud = json.dumps({"shot": i, "audio_hint": ""}, ensure_ascii=False)
-                h3_list.append(h3)
-                scene_list.append(scene)
-                video_list.append(vid)
-                audio_list.append(aud)
-
-        # 对齐长度
-        while len(scene_list) < len(h3_list):
-            scene_list.append("{}")
-        while len(video_list) < len(h3_list):
-            video_list.append("{}")
-        while len(audio_list) < len(h3_list):
-            audio_list.append("{}")
+        h3_list, scene_list, video_list, audio_list = [], [], [], []
+        for i, shot in enumerate(shots):
+            shot_num = i + 1
+            h3, scene, vid, aud = _parse_four_in_one(shot["raw"])
+            if not h3:
+                h3 = "[未找到H3提示词]"
+            if scene in ("", "{}"):
+                scene = self._rebuild_scene(shot["raw"], shot_num)
+            if vid in ("", "{}"):
+                vid = json.dumps({"shot": shot_num, "slots": []}, ensure_ascii=False)
+            if aud in ("", "{}"):
+                aud = json.dumps({"shot": shot_num, "slots": []}, ensure_ascii=False)
+            # 清洗槽位名小错误（缺类型前缀「道具:C」→「道具:道具C」、尾冒号）
+            scene = normalize_slots(scene)
+            vid = normalize_slots(vid)
+            aud = normalize_slots(aud)
+            h3_list.append(h3)
+            scene_list.append(scene)
+            video_list.append(vid)
+            audio_list.append(aud)
 
         return {"ui": {"text": h3_list}, "result": (h3_list, scene_list, video_list, audio_list)}
 
@@ -234,67 +295,41 @@ class JZL_MiniMax_SceneDispatcher:
     CATEGORY = "JZL/MiniMax"
 
     def execute(self, scene_instruction, **kwargs):
-        needed_chars, needed_bg, needed_props = [], "", []
-        try:
-            si = json.loads(scene_instruction) if isinstance(scene_instruction, str) else scene_instruction
-            if isinstance(si, list) and si:
-                s = si[0]
-                needed_chars = [c.strip() for c in s.get("characters", "无").replace("、", ",").split(",") if c.strip() and c.strip() != "无"]
-                needed_bg = s.get("scene", "").strip()
-                needed_props = [p.strip() for p in s.get("props", "无").replace("、", ",").split(",") if p.strip() and p.strip() != "无"]
-        except Exception:
-            pass
+        # 解析 slots 有序槽位数组（兼容 str JSON / list / dict）
+        slots = _parse_slots(scene_instruction)
 
-        char_images, bg_images, prop_images = {}, {}, {}
+        # 收集所有 IMAGE 输入（key = 上游节点名）
+        images = {}
         seen = {}
         for name, tensor in kwargs.items():
             if tensor is None or not isinstance(tensor, torch.Tensor):
                 continue
             seen[name] = seen.get(name, -1) + 1
             uname = f"{name}_{seen[name]}" if seen[name] else name
-            cat = self._classify(name)
-            if cat == "character":
-                char_images[uname] = tensor
-            elif cat == "background":
-                bg_images[uname] = tensor
+            images[uname] = tensor
+
+        used = set()
+        out = [None] * 9
+
+        # 严格按 slots 顺序匹配（slot[i] → out[i]），匹配不到留空（None = 没接，不编码不采样）
+        for i, slot in enumerate(slots):
+            if i >= 9:
+                break
+            if isinstance(slot, str) and ":" in slot:
+                _, name = slot.split(":", 1)
+                name = name.strip()
             else:
-                prop_images[uname] = tensor
-
-        empty_img = torch.zeros((1, 64, 64, 3), dtype=torch.float32, device="cpu")
-        for t in kwargs.values():
-            if isinstance(t, torch.Tensor):
-                empty_img = torch.zeros_like(t)
-                break
-
-        slots = [empty_img] * 9
-        si = 0
-        # 背景
-        for name in bg_images:
-            if si >= 9:
-                break
-            if not needed_bg or needed_bg in name or name in needed_bg:
-                slots[si] = bg_images[name]
-                si += 1
-                break
-        # 角色
-        for cn in needed_chars:
-            if si >= 9:
-                break
-            for name in char_images:
-                if cn in name or name in cn:
-                    slots[si] = char_images[name]
-                    si += 1
+                name = str(slot).strip()
+            for uname, tensor in images.items():
+                if uname in used:
+                    continue
+                if _match_name(name, uname):
+                    out[i] = tensor
+                    used.add(uname)
                     break
-        # 道具
-        for pn in needed_props:
-            if si >= 9:
-                break
-            for name in prop_images:
-                if pn in name or name in pn:
-                    slots[si] = prop_images[name]
-                    si += 1
-                    break
-        return tuple(slots)
+
+        # 无调度指令（slots 为空）时保持 None（不兜底全收）
+        return tuple(out)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -315,13 +350,8 @@ class JZL_MiniMax_VideoDispatcher:
     CATEGORY = "JZL/MiniMax"
 
     def execute(self, va_instruction, **kwargs):
-        needed_action = ""
-        try:
-            vi = json.loads(va_instruction) if isinstance(va_instruction, str) else va_instruction
-            if isinstance(vi, list) and vi:
-                needed_action = vi[0].get("action", "").strip()
-        except Exception:
-            pass
+        # 解析 slots 有序槽位数组（兼容 str JSON / list / dict）
+        slots = _parse_slots(va_instruction)
 
         videos, video_audios = {}, {}
         seen = {}
@@ -331,32 +361,42 @@ class JZL_MiniMax_VideoDispatcher:
             seen[name] = seen.get(name, -1) + 1
             uname = f"{name}_{seen[name]}" if seen[name] else name
             if "（音频）" in name:
+                if _is_empty_audio(value):
+                    continue
                 video_audios[uname] = value
             elif isinstance(value, torch.Tensor):
                 videos[uname] = value
 
-        empty_img = torch.zeros((1, 64, 64, 3), dtype=torch.float32, device="cpu")
-        for t in videos.values():
-            if isinstance(t, torch.Tensor):
-                empty_img = torch.zeros_like(t)
-                break
-
-        vid_slots = [empty_img] * 3
+        vid_slots = [None] * 3
         va_slots = [None] * 3
-        vi = 0
-        for name in videos:
-            if vi >= 3:
+        used = set()
+
+        # 严格按 slots 顺序匹配视频（slot[i] → vid_slots[i]），匹配不到留空（None）
+        for i, slot in enumerate(slots):
+            if i >= 3:
                 break
-            if not needed_action or any(kw in name for kw in needed_action.split() if kw):
-                vid_slots[vi] = videos[name]
-                vi += 1
-        vai = 0
-        for name in video_audios:
-            if vai >= 3:
-                break
-            va_slots[vai] = video_audios[name]
-            vai += 1
-        # 交叉输出: ref_video_0, ref_video_audio_0, ref_video_1, ...
+            if isinstance(slot, str) and ":" in slot:
+                _, name = slot.split(":", 1)
+                name = name.strip()
+            else:
+                name = str(slot).strip()
+            for uname, tensor in videos.items():
+                if uname in used:
+                    continue
+                if _match_name(name, uname):
+                    vid_slots[i] = tensor
+                    used.add(uname)
+                    break
+
+        # 配对音频：仅在有调度指令（slots 非空）时按收集顺序放，否则保持 None
+        if slots:
+            vai = 0
+            for name in video_audios:
+                if vai >= 3:
+                    break
+                va_slots[vai] = video_audios[name]
+                vai += 1
+
         return (vid_slots[0], va_slots[0], vid_slots[1], va_slots[1], vid_slots[2], va_slots[2])
 
 
@@ -377,19 +417,171 @@ class JZL_MiniMax_AudioDispatcher:
     CATEGORY = "JZL/MiniMax"
 
     def execute(self, va_instruction, **kwargs):
+        # 解析 slots 有序槽位数组（兼容 str JSON / list / dict）
+        slots = _parse_slots(va_instruction)
+
         audios = {}
         seen = {}
         for name, value in kwargs.items():
-            if value is None:
+            if value is None or _is_empty_audio(value):
                 continue
             seen[name] = seen.get(name, -1) + 1
             audios[f"{name}_{seen[name]}" if seen[name] else name] = value
 
-        slots = [None] * 3
-        ai = 0
-        for name in audios:
-            if ai >= 3:
+        out = [None] * 3
+        used = set()
+
+        # 严格按 slots 顺序匹配音频（slot[i] → out[i]）
+        for i, slot in enumerate(slots):
+            if i >= 3:
                 break
-            slots[ai] = audios[name]
-            ai += 1
-        return tuple(slots)
+            if isinstance(slot, str) and ":" in slot:
+                _, name = slot.split(":", 1)
+                name = name.strip()
+            else:
+                name = str(slot).strip()
+            for uname, value in audios.items():
+                if uname in used:
+                    continue
+                if _match_name(name, uname):
+                    out[i] = value
+                    used.add(uname)
+                    break
+
+        # 无调度指令（slots 为空）时保持 None（不兜底全收）
+        return tuple(out)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  节点 5: 场景元素调度2（固定接口：8角色+8场景+8道具，A~H）
+# ═══════════════════════════════════════════════════════════════
+
+class JZL_MiniMax_SceneDispatcher2:
+    """固定接口场景调度：角色A~H / 场景A~H / 道具A~H 共 24 个固定 IMAGE 输入。
+
+    不识别上游节点名，按固定接口名匹配：slots 里写「角色A」就取「角色A」接口的图。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        optional = {}
+        for prefix in ("角色", "场景", "道具"):
+            for ch in "ABCDEFGH":
+                optional[f"{prefix}{ch}"] = ("IMAGE",)
+        return {
+            "required": {"scene_instruction": ("*", {"force_input": True})},
+            "optional": optional,
+        }
+
+    RETURN_TYPES = ("IMAGE",) * 9
+    RETURN_NAMES = tuple(f"ref_image_{i}" for i in range(9))
+    FUNCTION = "execute"
+    CATEGORY = "JZL/MiniMax"
+
+    def execute(self, scene_instruction, **kwargs):
+        slots = _parse_slots(scene_instruction)
+        out = [None] * 9
+        used = set()
+        for i, slot in enumerate(slots):
+            if i >= 9:
+                break
+            name = slot.split(":", 1)[-1].strip() if isinstance(slot, str) and ":" in slot else str(slot).strip()
+            for key, tensor in kwargs.items():
+                if key in used or tensor is None or not isinstance(tensor, torch.Tensor):
+                    continue
+                if key == name or _match_name(name, key):
+                    out[i] = tensor
+                    used.add(key)
+                    break
+        return tuple(out)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  节点 6: 音频调度2（固定接口：音频A~H）
+# ═══════════════════════════════════════════════════════════════
+
+class JZL_MiniMax_AudioDispatcher2:
+    """固定接口音频调度：音频A~H 共 8 个固定 AUDIO 输入。
+
+    不识别上游节点名，按固定接口名匹配：slots 里写「音频A」就取「音频A」接口的音频。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        optional = {f"音频{ch}": ("AUDIO",) for ch in "ABCDEFGH"}
+        return {
+            "required": {"va_instruction": ("*", {"force_input": True})},
+            "optional": optional,
+        }
+
+    RETURN_TYPES = ("*", "*", "*")
+    RETURN_NAMES = ("ref_audio_0", "ref_audio_1", "ref_audio_2")
+    FUNCTION = "execute"
+    CATEGORY = "JZL/MiniMax"
+
+    def execute(self, va_instruction, **kwargs):
+        slots = _parse_slots(va_instruction)
+        out = [None] * 3
+        used = set()
+        for i, slot in enumerate(slots):
+            if i >= 3:
+                break
+            name = slot.split(":", 1)[-1].strip() if isinstance(slot, str) and ":" in slot else str(slot).strip()
+            for key, value in kwargs.items():
+                if key in used or value is None or _is_empty_audio(value):
+                    continue
+                if key == name or _match_name(name, key):
+                    out[i] = value
+                    used.add(key)
+                    break
+        return tuple(out)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  节点 7: 视频调度2（固定接口：8 组视频+音轨，A~H）
+# ═══════════════════════════════════════════════════════════════
+
+class JZL_MiniMax_VideoDispatcher2:
+    """固定接口视频调度：视频A~H + 视频A~H（音频）共 16 个固定输入。
+
+    不识别上游节点名，按固定接口名匹配：slots 里写「视频A」就取「视频A」接口的视频，
+    并自动配对同名的「视频A（音频）」音轨。
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        optional = {}
+        for ch in "ABCDEFGH":
+            optional[f"视频{ch}"] = ("IMAGE",)
+            optional[f"视频{ch}（音频）"] = ("AUDIO",)
+        return {
+            "required": {"va_instruction": ("*", {"force_input": True})},
+            "optional": optional,
+        }
+
+    RETURN_TYPES = ("IMAGE", "*", "IMAGE", "*", "IMAGE", "*")
+    RETURN_NAMES = ("ref_video_0", "ref_video_audio_0", "ref_video_1", "ref_video_audio_1", "ref_video_2", "ref_video_audio_2")
+    FUNCTION = "execute"
+    CATEGORY = "JZL/MiniMax"
+
+    def execute(self, va_instruction, **kwargs):
+        slots = _parse_slots(va_instruction)
+        vid_slots = [None] * 3
+        va_slots = [None] * 3
+        used = set()
+        for i, slot in enumerate(slots):
+            if i >= 3:
+                break
+            name = slot.split(":", 1)[-1].strip() if isinstance(slot, str) and ":" in slot else str(slot).strip()
+            for key, value in kwargs.items():
+                if key in used or value is None or "（音频）" in key:
+                    continue
+                if isinstance(value, torch.Tensor) and (key == name or _match_name(name, key)):
+                    vid_slots[i] = value
+                    used.add(key)
+                    audio_key = key + "（音频）"
+                    audio_val = kwargs.get(audio_key)
+                    if audio_val is not None and not _is_empty_audio(audio_val):
+                        va_slots[i] = audio_val
+                    break
+        return (vid_slots[0], va_slots[0], vid_slots[1], va_slots[1], vid_slots[2], va_slots[2])

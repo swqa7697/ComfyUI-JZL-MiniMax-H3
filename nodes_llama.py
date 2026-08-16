@@ -1,7 +1,7 @@
 """JZL MiniMax — Llama 模型加载器 + 编剧链节点（V1 经典 API）
 
 漫剧创作链的前半段：
-  剧本编剧 → 分镜词生成器 → （story_nodes.py 的分镜处理中心/调度）
+  剧本编剧 → 分段词生成器 → （story_nodes.py 的分段处理中心/调度）
 
 依赖 llama_backend.py 的 LLAMA_CPP_STORAGE，与 XB_ToolBox 完全解耦。
 """
@@ -9,11 +9,13 @@
 import os
 import re
 import json
+import urllib.request
 from datetime import datetime
 
 import folder_paths
 
 from .llama_backend import LLAMA_CPP_STORAGE, chat_handlers
+from .story_nodes import normalize_slots
 from .support_llama.presets.minimax_t2va import MINIMAX_T2VA_EN, MINIMAX_T2VA_ZH
 from .support_llama.presets.minimax_i2va import MINIMAX_I2VA_EN, MINIMAX_I2VA_ZH
 from .support_llama.presets.minimax_fl2va import MINIMAX_FL2VA_EN, MINIMAX_FL2VA_ZH
@@ -37,16 +39,16 @@ def _get_output_dir(story_name="", subfolder=""):
 
 
 def _safe_path(output_dir, prefix, shot_num=None, ext="txt"):
-    ts = datetime.now().strftime("%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d%H%M%S")
     fn = f"{prefix}_{shot_num:03d}_{ts}.{ext}" if shot_num is not None else f"{prefix}_{ts}.{ext}"
     return os.path.join(output_dir, fn)
 
 
 def _find_latest_version(base_dir):
-    """找到最新版本文件夹(第NNN次分镜词), 返回路径和下一个编号"""
+    """找到最新版本文件夹(第NNN次分段词), 返回路径和下一个编号"""
     if not os.path.isdir(base_dir):
-        return os.path.join(base_dir, "第001次分镜词"), 1
-    pat = re.compile(r'第(\d{3})次分镜词')
+        return os.path.join(base_dir, "第001次分段词"), 1
+    pat = re.compile(r'第(\d{3})次分段词')
     versions = []
     for f in os.listdir(base_dir):
         m = pat.match(f)
@@ -55,7 +57,36 @@ def _find_latest_version(base_dir):
     if versions:
         versions.sort(reverse=True)
         return os.path.join(base_dir, versions[0][1]), versions[0][0] + 1
-    return os.path.join(base_dir, "第001次分镜词"), 1
+    return os.path.join(base_dir, "第001次分段词"), 1
+
+
+def _api_settings_file():
+    """API 设置持久化文件路径（存 ComfyUI user 目录，API Key 不明文进工作流）"""
+    try:
+        base = folder_paths.get_user_directory()
+    except Exception:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "jzl_minimax_h3_api.json")
+
+
+def _read_api_settings():
+    """读取 API 设置（无配置返回空字典）"""
+    try:
+        with open(_api_settings_file(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_api_settings(data):
+    """保存 API 设置到磁盘（成功返回规范化后的字典）"""
+    try:
+        with open(_api_settings_file(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return data
+    except Exception:
+        return {}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -83,9 +114,9 @@ class JZL_LlamaModelLoaderPro:
                     "tooltip": "开启后显示上下文长度、显存上限、图像token 及全部推理参数"
                 }),
                 "n_ctx": ("INT", {
-                    "default": 16384,
-                    "min": 1024, "max": 327680, "step": 128,
-                    "tooltip": "上下文长度上限\n16384 确保完整加载设定词+故事+分镜输出"
+                    "default": 32768,
+                    "min": 1024, "max": 262144, "step": 128,
+                    "tooltip": "上下文长度上限\nQwen3.5-9B 原生 262144（256K）；短篇 32768，56 段调到 131072-262144"
                 }),
                 "vram_limit": ("INT", {
                     "default": -1,
@@ -94,8 +125,8 @@ class JZL_LlamaModelLoaderPro:
                 }),
                 "image_min_tokens": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 32}),
                 "image_max_tokens": ("INT", {"default": 0, "min": 0, "max": 4096, "step": 32}),
-                "max_tokens": ("INT", {"default": 6144, "min": 0, "max": 8192, "step": 1,
-                    "tooltip": "生成 Token 上限\n6144 确保 6-8 镜分镜脚本不会截断"}),
+                "max_tokens": ("INT", {"default": 8192, "min": 0, "max": 262144, "step": 1,
+                    "tooltip": "生成 Token 上限（Qwen3.5-9B 上限 262144）\n6 段约 12K，56 段约 128K，请按段数调整"}),
                 "top_k": ("INT", {"default": 40, "min": 0, "max": 1000, "step": 1,
                     "tooltip": "词汇库检索范围\n40 配合 0.60 温度，兼顾格式严谨与词汇多样"}),
                 "top_p": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 1.0, "step": 0.01}),
@@ -104,7 +135,7 @@ class JZL_LlamaModelLoaderPro:
                 "temperature": ("FLOAT", {"default": 0.6, "min": 0.0, "max": 2.0, "step": 0.01,
                     "tooltip": "温度\n0.60 确保 [SHOT_START] 格式严谨，减少幻觉"}),
                 "repeat_penalty": ("FLOAT", {"default": 1.12, "min": 0.0, "max": 10.0, "step": 0.01,
-                    "tooltip": "重复惩罚\n1.12 避免多镜分镜运镜描述句式复读"}),
+                    "tooltip": "重复惩罚\n1.12 避免多个分段运镜描述句式复读"}),
                 "frequency_penalty": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "present_penalty": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 2.0, "step": 0.01}),
                 "mirostat_mode": ("INT", {"default": 0, "min": 0, "max": 2, "step": 1}),
@@ -161,12 +192,275 @@ class JZL_LlamaModelLoaderPro:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  节点 2: 剧本与镜头处理器 (剧本编剧 + 分镜词生成器 合一)
-#  故事 → N 镜（每镜三合一：H3提示词 + 场景指令 + 音视频指令）
+#  节点 1.5: MiniMax H3 偏好设置（镜头语言偏好）
+# ═══════════════════════════════════════════════════════════════
+
+class JZL_MiniMaxH3Preference:
+    """MiniMax H3 偏好设置 — 实时生成镜头语言设定词，接剧本处理器的 preference 输入。
+
+    基于官方 h3-prompt-writing skill 的运镜/切镜/转场词汇（base-en.txt 4.2/4.3 节）。
+    「随机组合」不是瞎猜：给 LLM 一个候选范围，让它根据剧情与故事风格在范围内自由选择。
+    """
+
+    _SHOT_SIZES = ["根据剧情", "随机组合", "远景为主", "全景为主", "中景为主", "近景为主", "特写为主"]
+    _SHOT_SIZE_HINTS = {
+        "根据剧情": "景别根据剧情需要自由选择，每个内部切镜 [Shot N] 用最合适的景别",
+        "随机组合": "一个视频内多种景别混合使用（远景/全景/中景/近景/特写随剧情递进变化），不同 [Shot N] 用不同景别，禁止整段只用一种景别",
+        "远景为主": "以远景（Extreme Long / Long）为主，角色在画面中占比较小，突出环境、空间关系与整体氛围",
+        "全景为主": "以全景为主，完整呈现角色全身与场景全貌，交代人物与空间的关系",
+        "中景为主": "以中景为主，角色腰部以上入画，兼顾肢体动作与面部表情",
+        "近景为主": "以近景为主，角色胸部以上入画，突出表情、情绪与细节",
+        "特写为主": "以特写为主，聚焦面部、手部或关键道具细节，强调关键瞬间与冲击力",
+    }
+
+    _CAMERA_MOVES = ["根据剧情", "随机组合", "固定机位", "推拉", "摇移", "俯仰", "升降", "环绕", "跟拍", "手持晃动", "旋转", "一镜到底"]
+    _CAMERA_HINTS = {
+        "根据剧情": "运镜根据剧情需要自由选择，每个内部切镜 [Shot N] 用最合适的运镜",
+        "随机组合": "一个视频内多种运镜混合使用（推/拉/摇/移/跟/环绕/手持等穿插），不同 [Shot N] 用不同运镜，禁止整段只用一种运镜",
+        "固定机位": "以固定机位（Static Shot）为主，通过主体动作与构图变化叙事，不依赖镜头运动",
+        "推拉": "以推拉镜头（Push In / Pull Out）为主，推镜强调、拉镜揭示环境",
+        "摇移": "以摇移镜头（Pan / Truck）为主，横向展示空间与主体关系",
+        "俯仰": "以俯仰镜头（Tilt）为主，纵向展示高度差与空间纵深",
+        "升降": "以升降镜头（Pedestal Up / Down）为主，展示空间层次与规模",
+        "环绕": "以环绕镜头（Arc Shot）为主，围绕主体运动，突出对峙或审视感",
+        "跟拍": "以跟拍（Tracking Shot）为主，镜头跟随运动主体，强化速度与连贯性",
+        "手持晃动": "以手持晃动（Shake Slightly / Shake Strongly）为主，增强临场感与紧张感",
+        "旋转": "以旋转镜头（Roll）为主，制造动感、眩晕或心理失衡",
+        "一镜到底": "全程一镜到底，只用运镜改变视角，禁止切镜（无 [Shot N] 时间戳）",
+    }
+
+    _CUT_RHYTHMS = ["根据剧情", "随机组合", "一镜到底", "2~5镜", "5~9镜", "9~13镜", "13~18镜"]
+    _CUT_HINTS = {
+        "根据剧情": "切镜次数根据剧情决定：打斗/追逐/爆发默认高频快切（每个动作 2-4 秒切一镜），抒情/静态才放慢；不得均分切镜",
+        "随机组合": "一个视频内切镜节奏混合：打斗快切（2-4 秒一镜）与长镜穿插，蓄力极静、爆发极动，不得均分切镜",
+        "一镜到底": "一镜到底：本镜只写一个 [Shot 1]，禁止切镜，只靠运镜改变视角",
+        "2~5镜": "把本镜拆成 2-5 个 [Shot N] 切镜（单镜内部时间戳切镜）",
+        "5~9镜": "把本镜拆成 5-9 个 [Shot N] 切镜（单镜内部时间戳切镜）",
+        "9~13镜": "把本镜拆成 9-13 个 [Shot N] 切镜（单镜内部时间戳切镜）",
+        "13~18镜": "把本镜拆成 13-18 个 [Shot N] 切镜（单镜内部时间戳切镜）",
+    }
+
+    _TRANSITIONS = ["随机", "硬切", "叠化", "淡入淡出", "擦除"]
+    _TRANSITION_HINTS = {
+        "硬切": "全部使用硬切（cut），不额外加转场特效，切镜必须引入新信息（主体/空间/状态/视角/时间）",
+        "叠化": "使用叠化（cross-dissolve）过渡，适合时间流逝或情绪衔接",
+        "淡入淡出": "使用淡入淡出（fade）过渡，适合开场、收尾或段落切换",
+        "擦除": "使用擦除（wipe）过渡，适合空间切换或节奏明快的段落",
+    }
+
+    _CREATIVE_REQS = [
+        "无特别要求", "节奏紧凑", "悬念反转", "情感细腻", "幽默搞笑", "视觉奇观",
+        "燃向热血", "治愈温暖", "暗黑压抑", "多反转结局", "开放式结局", "强冲突",
+    ]
+    _CREATIVE_HINTS = {
+        "无特别要求": "",
+        "节奏紧凑": "节奏紧凑，画面信息密度高，每个镜头都推进剧情，不拖沓",
+        "悬念反转": "设置悬念铺垫，结尾要有出人意料的反转",
+        "情感细腻": "情感细腻，注重角色内心戏、微表情与情绪留白",
+        "幽默搞笑": "幽默搞笑，节奏轻快活泼，突出喜剧反差",
+        "视觉奇观": "注重视觉奇观，大场面、特效与震撼画面优先",
+        "燃向热血": "燃向热血，打斗要有打击感与力量传导，气氛高燃",
+        "治愈温暖": "治愈温暖，氛围舒缓放松，情感抚慰",
+        "暗黑压抑": "暗黑压抑，保持紧绷的戏剧张力与压迫感",
+        "多反转结局": "剧情多反转，层层递进，不断推翻观众预期",
+        "开放式结局": "开放式结局，留白给观众想象空间",
+        "强冲突": "角色矛盾尖锐直接，冲突强烈，张力十足",
+    }
+
+    _DETAIL_LENGTHS = [
+        "标准 (350-500字)",
+        "精简 (200-350字)",
+        "详细 (500-800字)",
+        "超详细 (800-1200字)",
+    ]
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "景别偏好": (s._SHOT_SIZES, {"default": "随机组合"}),
+                "运镜偏好": (s._CAMERA_MOVES, {"default": "随机组合"}),
+                "切镜节奏": (s._CUT_RHYTHMS, {"default": "随机"}),
+                "转场偏好": (s._TRANSITIONS, {"default": "随机"}),
+                "音乐风格": (JZL_MiniMaxPreset._MUSIC, {"default": "禁止音乐 / No Music"}),
+                "创作要求": (s._CREATIVE_REQS, {"default": "无特别要求"}),
+                "详细描述字数": (s._DETAIL_LENGTHS, {"default": "标准 (350-500字)"}),
+                "自定义镜头语言": ("STRING", {"default": "", "multiline": True,
+                    "placeholder": "选填。自由描述镜头要求，如：多用低角度仰拍、结尾慢动作定格、关键道具给特写..."}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("偏好设定词",)
+    FUNCTION = "build"
+    CATEGORY = "JZL/MiniMax"
+
+    def build(self, 景别偏好, 运镜偏好, 切镜节奏, 转场偏好, 音乐风格, 创作要求, 详细描述字数, 自定义镜头语言):
+        lines = ["## 镜头语言偏好（本批分段必须严格遵守）"]
+
+        lines.append(f"- 景别：{self._SHOT_SIZE_HINTS.get(景别偏好, 景别偏好)}")
+
+        lines.append(f"- 运镜：{self._CAMERA_HINTS.get(运镜偏好, 运镜偏好)}")
+
+        lines.append(f"- 切镜：{self._CUT_HINTS.get(切镜节奏, 切镜节奏)}")
+
+        if 转场偏好 == "随机":
+            lines.append("- 转场：根据剧情与故事风格，在「硬切 / 叠化 / 淡入淡出 / 擦除」范围内自由选择")
+        else:
+            lines.append(f"- 转场：{self._TRANSITION_HINTS.get(转场偏好, 转场偏好)}")
+
+        if "不指定" in 音乐风格:
+            pass
+        elif "禁止音乐" in 音乐风格:
+            lines.append("- 背景音乐：禁止任何背景音乐，non_diegetic_music 必须严格输出 \"N/A\"，不得写任何配乐/旋律/节奏")
+        else:
+            zh_name = 音乐风格.split(" / ")[-1]
+            hint = JZL_MiniMaxPreset._MUSIC_HINTS.get(音乐风格, "")
+            lines.append(f"- 背景音乐风格：{zh_name} — {hint}")
+
+        if 创作要求 == "无特别要求":
+            lines.append("- 创作要求：按故事风格自然发挥")
+        else:
+            lines.append(f"- 创作要求：{self._CREATIVE_HINTS.get(创作要求, 创作要求)}")
+
+        lines.append(f"- 详细描述字数：{详细描述字数}")
+
+        custom = (自定义镜头语言 or "").strip()
+        if custom:
+            lines.append(f"- 自定义：{custom}")
+        return ("\n".join(lines),)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  节点 1.6: API 设置（对接剧本处理器的 API 输入）
+# ═══════════════════════════════════════════════════════════════
+
+def _api_call_openai(base_url, api_key, model, messages, temperature, max_tokens, thinking=None):
+    """OpenAI 兼容 API（OpenAI/DeepSeek/Qwen/GLM/Kimi/Ollama/vLLM/LM Studio）。"""
+    url = (base_url or "https://api.openai.com/v1").rstrip("/") + "/chat/completions"
+    payload_dict = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    if thinking in ("enabled", "disabled"):
+        payload_dict["thinking"] = {"type": thinking}
+    payload = json.dumps(payload_dict).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, method="POST", headers={
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    })
+    with urllib.request.urlopen(req, timeout=1800) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if "choices" not in data or not data["choices"]:
+        return f"[API 错误] 响应无 choices：{json.dumps(data, ensure_ascii=False)[:500]}"
+    return data["choices"][0]["message"]["content"]
+
+
+def _api_call_anthropic(api_key, model, messages, temperature, max_tokens):
+    url = "https://api.anthropic.com/v1/messages"
+    system = ""
+    chat = []
+    for m in messages:
+        if m["role"] == "system":
+            system = m["content"]
+        else:
+            chat.append({"role": m["role"], "content": m["content"]})
+    payload = json.dumps({
+        "model": model,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "system": system,
+        "messages": chat,
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, method="POST", headers={
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+    })
+    with urllib.request.urlopen(req, timeout=1800) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    parts = [b.get("text", "") for b in data.get("content", []) if isinstance(b, dict) and b.get("type") == "text"]
+    if not parts:
+        return f"[API 错误] 响应无文本：{json.dumps(data, ensure_ascii=False)[:500]}"
+    return "".join(parts)
+
+
+def _api_call_gemini(api_key, model, messages, temperature, max_tokens):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    system = ""
+    user = ""
+    for m in messages:
+        if m["role"] == "system":
+            system = m["content"]
+        else:
+            user += m["content"] + "\n"
+    combined = (system + "\n\n" + user).strip() if system else user.strip()
+    payload = json.dumps({
+        "contents": [{"role": "user", "parts": [{"text": combined}]}],
+        "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
+    }).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, method="POST", headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=1800) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError, TypeError):
+        return f"[API 错误] 响应格式异常：{json.dumps(data, ensure_ascii=False)[:500]}"
+
+
+class JZL_MiniMaxAPISettings:
+    """API 设置 — 点击「打开设置」在弹窗中配置（API Key 掩码不明文），执行时输出 JSON 配置接剧本处理器的 api_config。"""
+
+    _PROVIDERS = [
+        "OpenAI 兼容 (OpenAI/DeepSeek/Qwen/GLM/Kimi/Ollama/vLLM/LM Studio)",
+        "Anthropic",
+        "Google Gemini",
+    ]
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "open_settings": ("BOOLEAN", {"default": False,
+                    "label_on": "⚙️ 打开 API 设置…", "label_off": "⚙️ 打开 API 设置…",
+                    "tooltip": "点击后在弹窗中配置 provider/模型/API Key/地址/温度/Token，保存即生效"}),
+            },
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("api_config",)
+    FUNCTION = "build"
+    CATEGORY = "JZL/MiniMax"
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # 弹窗中保存配置后，配置内容变化会触发本节点重新执行，下游拿到最新配置
+        import json as _json
+        return _json.dumps(_read_api_settings(), sort_keys=True, ensure_ascii=False)
+
+    def build(self, open_settings):
+        settings = _read_api_settings()
+        config = {
+            "provider": settings.get("provider", self._PROVIDERS[0]),
+            "model": (settings.get("model") or "").strip(),
+            "api_key": (settings.get("api_key") or "").strip(),
+            "base_url": (settings.get("base_url") or "").strip(),
+            "temperature": settings.get("temperature", 0.6),
+            "max_tokens": settings.get("max_tokens", 8192),
+            "thinking": settings.get("thinking"),
+        }
+        return (json.dumps(config, ensure_ascii=False),)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  节点 2: 剧本与镜头处理器 (剧本编剧 + 分段词生成器 合一)
+#  故事 → N 段（每段三合一：H3提示词 + 场景指令 + 音视频指令）
 # ═══════════════════════════════════════════════════════════════
 
 class JZL_MiniMax_ScriptProcessor:
-    """剧本与镜头处理器 — 一次 LLM 调用：故事拆解 + 每镜 H3 提示词 + 调度指令。"""
+    """剧本与镜头处理器 — 一次 LLM 调用：故事拆解 + 每段 H3 提示词 + 调度指令。"""
 
     _FIELD_PATTERNS = [
         ("characters", r'\*\*角色\*\*[：:]\s*(.+?)(?:\n|$)'),
@@ -178,21 +472,24 @@ class JZL_MiniMax_ScriptProcessor:
 
     @classmethod
     def INPUT_TYPES(cls):
-        from .presets.script import STORY_STYLES, SHOT_COUNT_OPTIONS
+        from .presets.script import STORY_STYLES, SEGMENT_COUNT_OPTIONS
         try:
             from .sheding.story_styles import STORY_STYLES as _ss
         except ImportError:
             _ss = STORY_STYLES
         return {
             "required": {
-                "llm_backend": (["local", "api"], {"default": "local"}),
+                "llm_backend": (["本地模型 [local]", "在线API [api]"], {"default": "本地模型 [local]"}),
                 "mode": (["拆解模式 (Decompose)", "生成模式 (Generate)"], {"default": "拆解模式 (Decompose)"}),
                 "story_style": (list(_ss.keys()), {"default": list(_ss.keys())[0] if _ss else "热血战斗"}),
+                "use_custom_rule": ("BOOLEAN", {"default": False,
+                    "label_on": "自定义规则", "label_off": "默认规则",
+                    "tooltip": "关闭=使用默认分段规则；开启=启用下方自定义规则（粘贴文本 / 填文件路径 / 浏览选文件）"}),
                 "story_name": ("STRING", {"default": "", "placeholder": "故事名称"}),
                 "story_input": ("STRING", {"multiline": True, "default": ""}),
-                "shot_length": (list(SHOT_COUNT_OPTIONS.keys()), {"default": list(SHOT_COUNT_OPTIONS.keys())[0] if SHOT_COUNT_OPTIONS else "短篇 (4镜)"}),
-                "shot_duration": ("INT", {"default": 8, "min": 4, "max": 15, "step": 1,
-                    "tooltip": "分镜时长(秒)，强制每个分镜视频长度。与「海螺H3视频参数」的时长联动"}),
+                "segment_count": (list(SEGMENT_COUNT_OPTIONS.keys()), {"default": list(SEGMENT_COUNT_OPTIONS.keys())[0] if SEGMENT_COUNT_OPTIONS else "4段"}),
+                "segment_duration": ("INT", {"default": 8, "min": 4, "max": 15, "step": 1,
+                    "tooltip": "每段视频时长(秒)，强制每段视频长度。与「海螺H3视频参数」的时长联动"}),
                 "prompt_lang": (["中文 [ZH]", "英文 [EN]"], {"default": "中文 [ZH]"}),
                 "ref_image_intro": ("STRING", {"multiline": True, "default": "",
                     "placeholder": "参考图片介绍，例：图1主角特写，图2背景街道..."}),
@@ -200,35 +497,40 @@ class JZL_MiniMax_ScriptProcessor:
                     "placeholder": "参考视频介绍，例：视频1运镜参考，视频2动作参考..."}),
                 "ref_audio_intro": ("STRING", {"multiline": True, "default": "",
                     "placeholder": "参考音频介绍，例：音频1男主音色，音频2女主音色..."}),
-                "advanced_settings": ("BOOLEAN", {
-                    "default": False,
-                    "label_on": "高级参数 ▾",
-                    "label_off": "高级参数 ▸",
-                    "tooltip": "开启后显示场景/道具/视频/音频调度开关"
-                }),
                 "enable_scene": ("BOOLEAN", {"default": True, "label_on": "启用场景", "label_off": "禁用场景",
-                    "tooltip": "启用后统计表和分镜里才会输出场景分类调度指令"}),
+                    "tooltip": "启用后统计表和分段里才会输出场景分类调度指令"}),
                 "enable_props": ("BOOLEAN", {"default": True, "label_on": "启用道具", "label_off": "禁用道具",
-                    "tooltip": "启用后统计表和分镜里才会输出道具分类调度指令"}),
+                    "tooltip": "启用后统计表和分段里才会输出道具分类调度指令"}),
                 "enable_video": ("BOOLEAN", {"default": True, "label_on": "启用视频", "label_off": "禁用视频",
-                    "tooltip": "启用后分镜里才会输出参考视频调度指令"}),
+                    "tooltip": "启用后分段里才会输出参考视频调度指令"}),
                 "enable_audio": ("BOOLEAN", {"default": True, "label_on": "启用音频", "label_off": "禁用音频",
-                    "tooltip": "启用后分镜里才会输出参考音频调度指令"}),
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "step": 1}),
+                    "tooltip": "启用后分段里才会输出参考音频调度指令"}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "step": 1, "control_after_generate": True,
+                    "tooltip": "随机种子\n改 seed 可生成不同结果；前端可选随机/递增"}),
                 "force_offload": ("BOOLEAN", {"default": False}),
                 "save_states": ("BOOLEAN", {"default": False}),
             },
             "optional": {
                 "llama_model": ("LLAMACPPMODEL",),
                 "parameters": ("LLAMACPPARAMS",),
-                "api_response": ("*", {"force_input": True}),
+                "api_config": ("STRING", {"forceInput": True,
+                    "tooltip": "在线API 模式：从「JZL - 🌐 API 设置」节点连线，自动读取弹窗中保存的配置"}),
+                "preference": ("STRING", {"default": "", "forceInput": True,
+                    "tooltip": "从「JZL - 🎯 MiniMax H3 偏好设置」节点连线"}),
+                "custom_rule_path": ("STRING", {"default": "",
+                    "placeholder": "选填。可直接粘贴规则文本，或填文件路径（.txt / .py），或点「📂 浏览」选文件；与官方格式重叠的描述会被自动清洗"}),
             },
         }
 
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("参数总线", "剧本输出")
+    RETURN_TYPES = ("STRING", "JZL_H3_BUS")
+    RETURN_NAMES = ("剧本输出", "BUS")
     FUNCTION = "execute"
     CATEGORY = "JZL/MiniMax"
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # seed 参与缓存签名：改 seed 必须触发重新生成
+        return kwargs.get("seed", 0)
 
     @classmethod
     def _parse_four_in_one(cls, content):
@@ -248,7 +550,8 @@ class JZL_MiniMax_ScriptProcessor:
 
     @classmethod
     def _extract_scene_info(cls, shot, shot_num, enable_scene=True, enable_props=True):
-        chars, scene, props = "无", "", "无"
+        # 容错：LLM 未输出 SCENE_INSTRUCTION 段时，从结构化字段重建 slots（场景→角色→道具）
+        chars, scene, props = "", "", ""
         for key, pat in cls._FIELD_PATTERNS:
             m = re.search(pat, shot)
             if not m:
@@ -256,81 +559,241 @@ class JZL_MiniMax_ScriptProcessor:
             val = m.group(1).strip()
             if key == "characters":
                 chars = val
-            elif key == "scene" and enable_scene:
+            elif key == "scene":
                 scene = val
-            elif key == "props" and enable_props:
+            elif key == "props":
                 props = val
-        return json.dumps({"shot": shot_num, "characters": chars or "无", "scene": scene, "props": props or "无"}, ensure_ascii=False)
+        slots = []
+        if enable_scene and scene:
+            slots.append(f"场景:{scene}")
+        if chars:
+            for c in chars.replace("、", ",").split(","):
+                c = c.strip()
+                if c and c != "无":
+                    slots.append(f"角色:{c}")
+        if enable_props and props:
+            for p in props.replace("、", ",").split(","):
+                p = p.strip()
+                if p and p != "无":
+                    slots.append(f"道具:{p}")
+        return json.dumps({"shot": shot_num, "slots": slots}, ensure_ascii=False)
 
     @classmethod
     def _extract_video_info(cls, shot, shot_num):
-        camera, action = "固定", ""
-        for key, pat in cls._FIELD_PATTERNS:
-            m = re.search(pat, shot)
-            if not m:
-                continue
-            val = m.group(1).strip()
-            if key == "camera":
-                camera = val
-            elif key == "action":
-                action = val
-        return json.dumps({"shot": shot_num, "camera": camera or "固定", "action": action, "video_hint": ""}, ensure_ascii=False)
+        # 容错：视频素材名无法从结构化字段推断，slots 置空（调度节点全收兜底）
+        return json.dumps({"shot": shot_num, "slots": []}, ensure_ascii=False)
 
     @classmethod
     def _extract_audio_info(cls, shot, shot_num):
-        return json.dumps({"shot": shot_num, "audio_hint": ""}, ensure_ascii=False)
+        return json.dumps({"shot": shot_num, "slots": []}, ensure_ascii=False)
 
     @classmethod
-    def _build_stat_table(cls, scene_list, shot_count):
+    def _build_stat_table(cls, scene_list, segment_count):
         chars, scenes, props = [], [], []
         for s in scene_list:
             try:
                 d = json.loads(s) if isinstance(s, str) else (s or {})
             except Exception:
                 d = {}
-            for c in str(d.get("characters", "")).replace("、", ",").split(","):
-                c = c.strip()
-                if c and c != "无" and c not in chars:
-                    chars.append(c)
-            sc = str(d.get("scene", "")).strip()
-            if sc and sc not in scenes:
-                scenes.append(sc)
-            for p in str(d.get("props", "")).replace("、", ",").split(","):
-                p = p.strip()
-                if p and p != "无" and p not in props:
-                    props.append(p)
+            for slot in d.get("slots", []):
+                if isinstance(slot, str) and ":" in slot:
+                    typ, name = slot.split(":", 1)
+                    typ, name = typ.strip(), name.strip()
+                else:
+                    typ, name = "", str(slot).strip()
+                if not name:
+                    continue
+                if "场景" in typ or typ == "scene":
+                    if name not in scenes:
+                        scenes.append(name)
+                elif "角色" in typ or typ == "character":
+                    if name not in chars:
+                        chars.append(name)
+                elif "道具" in typ or typ == "prop":
+                    if name not in props:
+                        props.append(name)
         lines = ["[Statistical table]"]
         lines.append(f"角色共{len(chars)}个：{'、'.join(chars) if chars else '无'}")
         lines.append(f"场景共{len(scenes)}个：{'、'.join(scenes) if scenes else '无'}")
         lines.append(f"道具共{len(props)}个：{'、'.join(props) if props else '无'}")
-        lines.append(f"分镜共{shot_count}个")
+        lines.append(f"分段共{segment_count}个")
         return "\n".join(lines)
 
-    def execute(self, mode, story_name, story_input, story_style, shot_length,
-                shot_duration, prompt_lang, ref_image_intro, ref_video_intro, ref_audio_intro,
-                advanced_settings, enable_scene, enable_props, enable_video, enable_audio,
-                seed, force_offload, save_states,
-                llm_backend="local", llama_model=None, parameters=None, api_response=None):
-        from .presets.script import build_shot_prompt, SHOT_COUNT_OPTIONS
+    @staticmethod
+    def _load_custom_rules(path):
+        """读取自定义分段提示词：值是存在的文件路径则读文件，否则直接把值本身当规则内容。"""
+        if not path or not path.strip():
+            return ""
+        p = path.strip()
+        if os.path.isfile(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return f.read()
+            except Exception as e:
+                return f"[读取自定义规则失败] {e}"
+        # 不是文件路径 → 直接把输入文本当规则内容（支持粘贴规则或从文本节点连线）
+        return p
 
-        bus = json.dumps({"story_name": story_name, "api_response": api_response, "has_llama": llama_model is not None}, ensure_ascii=False)
+    @staticmethod
+    def _clean_custom_rules(text):
+        """清洗自定义分段提示词：剥离与官方六段格式/标签/调度重叠的描述，只保留润色要求。"""
+        if not text:
+            return ""
+        strip_markers = [
+            "subject_definitions", "summary", "retention_analysis",
+            "detailed_description", "overall_soundscape", "non_diegetic_music",
+            "integrated_multimodal_description",
+            "[shot_start]", "[shot_end]", "[shot",
+            "===h3_prompt===", "===scene_instruction===", "===video_instruction===", "===audio_instruction===",
+            "<subject", "<picture", "<video", "<audio",
+            "scene_instruction", "video_instruction", "audio_instruction",
+            "slots", "(s1)", "(s2)", "<d>", "<scenetrans>", "<cutoff>",
+        ]
+        kept = []
+        for line in (text or "").splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            low = s.lower()
+            if any(mk in low for mk in strip_markers):
+                continue
+            kept.append(s)
+        return "\n".join(kept)
+
+    @staticmethod
+    def _validate_slots(scene_info, video_info, audio_info):
+        """校验调度指令 slots 槽位名是否符合契约，返回告警列表。
+
+        合法格式（与调度节点 _match_name 的宽松匹配一致）：
+        - 「类型:槽位名」；类型 = 场景/角色/道具/视频/音频（或 scene/character/prop/video/audio）
+        - 槽位名 = A~H 字母（如「音频:D」）或 类型前缀+A~H（如「音频:音频D」）
+        - 尾冒号/尾空格自动容错
+        """
+        warnings = []
+        zh_types = ("场景", "角色", "道具", "视频", "音频")
+        en_types = ("scene", "character", "prop", "video", "audio")
+        name_pat = re.compile(r'^(?:场景|角色|道具|视频|音频|scene|character|prop|video|audio)?[A-H]$', re.IGNORECASE)
+        for label, info in (("场景", scene_info), ("视频", video_info), ("音频", audio_info)):
+            try:
+                d = json.loads(info) if isinstance(info, str) else (info or {})
+            except Exception:
+                continue
+            for slot in (d.get("slots") or []):
+                if not isinstance(slot, str) or ":" not in slot:
+                    continue
+                typ, name = slot.split(":", 1)
+                typ = typ.strip()
+                name = name.strip().rstrip(":：")
+                if (typ not in zh_types and typ not in en_types) or not name_pat.match(name):
+                    warnings.append(f"[⚠️ 槽位名异常] 第{d.get('shot', '?')}段 {label}调度 slots 含「{slot}」——槽位名必须是 A~H 字母（如「音频:D」）或 类型+A~H（如「音频:音频D」），不是素材名/描述")
+        return warnings
+
+    @staticmethod
+    def _has_dialogue(h3_text):
+        """六段提示词里是否有实际对白（<d> 标签）。"""
+        return bool(re.search(r'<d>', h3_text or ""))
+
+    @staticmethod
+    def _filter_scene_slots(scene_json, enable_scene, enable_props):
+        """按开关过滤 SCENE_INSTRUCTION 的 slots：删场景/道具元素，返回 JSON 字符串。"""
+        try:
+            d = json.loads(scene_json) if isinstance(scene_json, str) else (dict(scene_json) if isinstance(scene_json, dict) else {})
+        except Exception:
+            return scene_json
+        filtered = []
+        for s in (d.get("slots") or []):
+            if isinstance(s, str) and ":" in s:
+                typ = s.split(":", 1)[0].strip()
+                if typ == "场景" and not enable_scene:
+                    continue
+                if typ == "道具" and not enable_props:
+                    continue
+            filtered.append(s)
+        d["slots"] = filtered
+        return json.dumps(d, ensure_ascii=False)
+
+    @staticmethod
+    def _filter_scene_instruction_text(text, enable_scene, enable_props):
+        """对块文本里的 ===SCENE_INSTRUCTION=== 段按开关过滤 slots。"""
+        if enable_scene and enable_props:
+            return text
+        m = re.search(r'(===SCENE_INSTRUCTION===\s*)(\{[^{}]*\})', text, flags=re.DOTALL)
+        if not m:
+            return text
+        filtered = JZL_MiniMax_ScriptProcessor._filter_scene_slots(m.group(2), enable_scene, enable_props)
+        return text[:m.start()] + m.group(1) + filtered + text[m.end():]
+
+    @staticmethod
+    def _clean_shot_text(shot_text, has_dialogue, enable_scene, enable_props, enable_video, enable_audio):
+        """按开关/无对话情况清理分段块文本：删除禁用段、无对话分段去掉说话人ID与音频。"""
+        t = shot_text
+        if not has_dialogue:
+            t = re.sub(r'\s*\((S\d+)\)', '', t)
+            t = re.sub(r'<Audio \d+>[^\n]*\n?', '', t)
+            t = re.sub(r'(===AUDIO_INSTRUCTION===\s*\{[^}]*?"slots"\s*:\s*)\[[^\]]*\]', r'\1[]', t, flags=re.DOTALL)
+        t = JZL_MiniMax_ScriptProcessor._filter_scene_instruction_text(t, enable_scene, enable_props)
+        if not enable_video:
+            t = re.sub(r'===VIDEO_INSTRUCTION===.*?(?====|\[SHOT_END\])', '', t, flags=re.DOTALL)
+        if not enable_audio:
+            t = re.sub(r'===AUDIO_INSTRUCTION===.*?(?====|\[SHOT_END\])', '', t, flags=re.DOTALL)
+        return t.strip()
+
+    @staticmethod
+    def _call_api(config, system_prompt, user_msg):
+        """根据 API 配置调用大模型 API，返回生成文本。"""
+        try:
+            cfg = json.loads(config) if isinstance(config, str) else (config or {})
+        except Exception:
+            return "[API 配置错误] 无法解析 API 配置 JSON"
+        provider = cfg.get("provider", "")
+        model = (cfg.get("model") or "").strip()
+        api_key = (cfg.get("api_key") or "").strip()
+        base_url = (cfg.get("base_url") or "").strip()
+        temperature = cfg.get("temperature", 0.6)
+        max_tokens = cfg.get("max_tokens", 8192)
+        thinking = cfg.get("thinking")  # "enabled" / "disabled" / None
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_msg},
+        ]
+        try:
+            if "Anthropic" in provider:
+                return _api_call_anthropic(api_key, model, messages, temperature, max_tokens)
+            if "Gemini" in provider:
+                return _api_call_gemini(api_key, model, messages, temperature, max_tokens)
+            return _api_call_openai(base_url, api_key, model, messages, temperature, max_tokens, thinking)
+        except Exception as e:
+            return f"[API 错误] {e}"
+
+    def execute(self, mode, story_name, story_input, story_style, use_custom_rule,
+                segment_count, segment_duration, prompt_lang, ref_image_intro, ref_video_intro, ref_audio_intro,
+                enable_scene, enable_props, enable_video, enable_audio,
+                seed, force_offload, save_states,
+                llm_backend="local", llama_model=None, parameters=None, api_config=None, preference=None, custom_rule_path=None):
+        from .presets.script import build_shot_prompt, SEGMENT_COUNT_OPTIONS
+
         if not story_input or not story_input.strip():
-            return (bus, "[错误] 请输入故事内容")
+            return ("[错误] 请输入故事内容", {})
 
         lang = "zh" if "ZH" in prompt_lang else "en"
+        custom_rules = ""
+        if use_custom_rule:
+            custom_rules = self._clean_custom_rules(self._load_custom_rules(custom_rule_path))
         system_prompt = build_shot_prompt(
             user_story=story_input.strip(), mode=mode, story_style=story_style,
-            shot_count_label=shot_length, lang=lang, shot_duration=shot_duration,
+            segment_count_label=segment_count, lang=lang, segment_duration=segment_duration,
             ref_image_intro=ref_image_intro, ref_video_intro=ref_video_intro, ref_audio_intro=ref_audio_intro,
             enable_scene=enable_scene, enable_props=enable_props,
             enable_video=enable_video, enable_audio=enable_audio,
+            preference=(preference or "").strip(),
+            custom_rules=custom_rules,
         )
-        shot_count = SHOT_COUNT_OPTIONS.get(shot_length, 4)
-        user_msg = f"请生成恰好 {shot_count} 个镜头，每个镜头固定 {shot_duration} 秒，输出 [SHOT_START]...[SHOT_END] 完整块（分镜信息 + 六段提示词 + 调度指令）。"
+        segment_count = SEGMENT_COUNT_OPTIONS.get(segment_count, 4)
+        user_msg = f"请生成恰好 {segment_count} 个分段，每段视频固定 {segment_duration} 秒，输出 [SHOT_START]...[SHOT_END] 完整块（分段信息 + 六段提示词 + 调度指令）。"
 
-        if llm_backend == "api" and api_response:
-            result = api_response
-        elif llm_backend == "local" and llama_model is not None:
+        if "api" in str(llm_backend) and api_config:
+            result = self._call_api(api_config, system_prompt, user_msg)
+        elif "local" in str(llm_backend) and llama_model is not None:
             if not LLAMA_CPP_STORAGE.llm:
                 LLAMA_CPP_STORAGE.load_model(llama_model)
             try:
@@ -349,61 +812,109 @@ class JZL_MiniMax_ScriptProcessor:
                 elif not save_states:
                     LLAMA_CPP_STORAGE.clean_state()
         else:
-            return (bus, "[错误] 请连接 llama_model 或 api_response")
+            return ("[错误] 请连接 llama_model，或切换到在线API 并从「API 设置」节点连线 api_config", {})
 
-        # 解析 N 镜 → 四段（H3提示词 / 场景 / 视频 / 音频），保存 TXT
+        # 解析 N 段 → 四段（H3提示词 / 场景 / 视频 / 音频），保存 TXT
         shots = re.findall(r'\[SHOT_START\](.*?)\[SHOT_END\]', result or "", re.DOTALL)
         shots = [s.strip() for s in shots]
         h3_list, scene_list, video_list, audio_list = [], [], [], []
+        cleaned_shots = []
+        slot_warnings = []
         if shots:
             base_dir = _get_output_dir(story_name, "H3提示词")
             _, next_ver = _find_latest_version(base_dir)
-            ver_dir = os.path.join(base_dir, f"第{next_ver:03d}次分镜词")
+            ver_dir = os.path.join(base_dir, f"第{next_ver:03d}次分段词")
             os.makedirs(ver_dir, exist_ok=True)
             for i, shot in enumerate(shots):
                 shot_num = i + 1
                 h3_text, scene_info, video_info, audio_info = self._parse_four_in_one(shot)
                 if not h3_text:
-                    h3_text = f"[解析失败] 第{shot_num}镜缺少 ===H3_PROMPT==="
+                    h3_text = f"[解析失败] 第{shot_num}段缺少 ===H3_PROMPT==="
                 if scene_info == "{}":
                     scene_info = self._extract_scene_info(shot, shot_num, enable_scene, enable_props)
                 if video_info == "{}":
                     video_info = self._extract_video_info(shot, shot_num)
                 if audio_info == "{}":
                     audio_info = self._extract_audio_info(shot, shot_num)
+                # 场景/道具开关：过滤 slots（无论 LLM 是否输出）
+                scene_info = self._filter_scene_slots(scene_info, enable_scene, enable_props)
+                # 清洗槽位名小错误（缺类型前缀「道具:C」→「道具:道具C」、尾冒号）
+                scene_info = normalize_slots(scene_info)
+                video_info = normalize_slots(video_info)
+                audio_info = normalize_slots(audio_info)
+                slot_warnings.extend(self._validate_slots(scene_info, video_info, audio_info))
+                # 无对话分段：清空音频调度、删除 <Audio N> 定义与误用的 (Sx)
+                has_dialogue = self._has_dialogue(h3_text)
+                if not has_dialogue:
+                    audio_info = json.dumps({"shot": shot_num, "slots": []}, ensure_ascii=False)
+                    h3_text = re.sub(r'<Audio \d+>[^\n]*\n?', '', h3_text)
+                    h3_text = re.sub(r'\s*\((S\d+)\)', '', h3_text)
                 h3_list.append(h3_text)
                 scene_list.append(scene_info)
                 video_list.append(video_info)
                 audio_list.append(audio_info)
+                cleaned_shots.append(self._clean_shot_text(shot, has_dialogue, enable_scene, enable_props, enable_video, enable_audio))
 
-                ts = datetime.now().strftime("%H%M%S")
-                txt_path = os.path.join(ver_dir, f"{shot_num:03d}镜头_{ts}.txt")
+                ts = datetime.now().strftime("%Y%m%d%H%M%S")
+                txt_path = os.path.join(ver_dir, f"{shot_num:03d}分段_{ts}.txt")
                 with open(txt_path, "w", encoding="utf-8") as f:
                     f.write(f"===H3_PROMPT===\n{h3_text}\n")
                     f.write(f"===SCENE_INSTRUCTION===\n{scene_info}\n")
-                    f.write(f"===VIDEO_INSTRUCTION===\n{video_info}\n")
-                    f.write(f"===AUDIO_INSTRUCTION===\n{audio_info}\n")
+                    if enable_video:
+                        f.write(f"===VIDEO_INSTRUCTION===\n{video_info}\n")
+                    if enable_audio:
+                        f.write(f"===AUDIO_INSTRUCTION===\n{audio_info}\n")
 
-        # 统计表由节点计算，保证准确（方便用户准备素材）
-        stat_table = self._build_stat_table(scene_list, len(shots))
+        # 统计表由节点计算，保证准确（方便用户准备素材），分段数用「要求的数量」
+        stat_table = self._build_stat_table(scene_list, segment_count)
 
-        bus_data = {"story_name": story_name, "api_response": api_response, "has_llama": llama_model is not None}
-        bus_data["h3_prompts"] = h3_list
-        bus_data["scene_infos"] = scene_list
-        bus_data["video_infos"] = video_list
-        bus_data["audio_infos"] = audio_list
-        bus_data["stat_table"] = stat_table
-        new_bus = json.dumps(bus_data, ensure_ascii=False)
+        # 槽位名校验告警（发现「天空」这类把描述当槽位名的情况，提示用户）
+        if slot_warnings:
+            stat_table = stat_table + "\n" + "\n".join(slot_warnings)
 
-        # 剧本输出：统计表 + 分镜原文（LLM 出错时直接透出错误信息）
-        script_output = (stat_table + "\n\n" + result) if shots else result
+        # 块数校验：LLM 实际输出分段数 ≠ 要求数时告警，防止静默丢段
+        actual_count = len(shots)
+        if actual_count != segment_count:
+            stat_table = (stat_table +
+                          f"\n[⚠️ 分段数量不符] 要求 {segment_count} 段，实际解析到 {actual_count} 段。"
+                          "请检查 LLM 输出是否被截断，或重新生成。")
+
+        # 剧本输出：统计表 + 清理后的分段原文（禁用段已删除、无对话分段已去音频）
+        if shots:
+            cleaned_result = "\n\n".join(f"[SHOT_START]\n{s}\n[SHOT_END]" for s in cleaned_shots)
+            script_output = stat_table + "\n\n" + cleaned_result
+        else:
+            script_output = result
 
         # 保存剧本（含统计表）
         prefix = "生成故事拆解" if "生成" in mode else "原始故事拆解"
         with open(_safe_path(_get_output_dir(story_name, "故事拆解"), prefix), "w", encoding="utf-8") as f:
             f.write(script_output)
 
-        return (new_bus, script_output)
+        # BUS 输出：把模型/API/偏好/风格等参数打包，供「提示词增强」节点独立运行 LLM
+        bus = {
+            "llm_backend": llm_backend,
+            "llama_model": llama_model,
+            "parameters": parameters,
+            "api_config": api_config,
+            "preference": preference,
+            "story_style": story_style,
+            "mode": mode,
+            "segment_count": segment_count,
+            "segment_duration": segment_duration,
+            "prompt_lang": prompt_lang,
+            "lang": lang,
+            "custom_rules": custom_rules,
+            "enable_scene": enable_scene,
+            "enable_props": enable_props,
+            "enable_video": enable_video,
+            "enable_audio": enable_audio,
+            "seed": seed,
+            "force_offload": force_offload,
+            "save_states": save_states,
+            "story_name": story_name,
+        }
+        return (script_output, bus)
 
 
 class JZL_MiniMaxPreset:
@@ -491,51 +1002,35 @@ class JZL_MiniMaxPreset:
     _MUSIC = [
         "禁止音乐 / No Music",
         "不指定 / Unspecified",
-        # 🎹 器乐
-        "钢琴 / Piano", "管弦乐 / Orchestral",
-        "原声吉他 / Acoustic",
-        # 🎛️ 电子
-        "电子 / Electronic", "氛围 / Ambient",
-        "合成器浪潮 / Synthwave", "芯片音乐 / Chiptune",
-        "Lo-fi / Lo-fi",
-        # 🎞️ 叙事
-        "史诗 / Epic", "悬疑 / Suspense",
-        "浪漫弦乐 / Romantic Strings",
-        # 🥁 节奏
-        "摇滚 / Rock", "爵士 / Jazz",
-        "嘻哈 / Hip-Hop", "放克 / Funk",
-        # ⛪ 人声
-        "纯人声合唱 / Acapella Choir",
-        # 🔇 极简
-        "极简拟音 / Minimalist Foley",
-        # 🏮 中国风
-        "国风民乐 / Chinese Folk",
-        "戏曲 / Chinese Opera",
-        "古琴 / Guqin",
+        # � 电影配乐（按场景/情绪，符合官方 non_diegetic_music 写法：乐器+速度+节奏+动态）
+        "史诗战争 / Epic Orchestral",
+        "动作追逐 / Action Chase",
+        "紧张悬疑 / Tense Suspense",
+        "恐怖惊悚 / Horror Atmosphere",
+        "温馨治愈 / Warm & Gentle",
+        "浪漫爱情 / Romantic Strings",
+        "悲伤抒情 / Melancholic",
+        "轻松喜剧 / Light Comedy",
+        "古风武侠 / Chinese Wuxia",
+        "科幻未来 / Sci-fi Electronic",
+        "神秘探索 / Mysterious Adventure",
+        "史诗悲剧 / Tragic Epic",
     ]
 
     _MUSIC_HINTS = {
         "禁止音乐 / No Music": "ABSOLUTELY NO background music of any kind. non_diegetic_music MUST be \"N/A\". Do not add any score, melody, or rhythm.",
-        "钢琴 / Piano": "a solo piano piece at a slow to moderate tempo, with sparse delicate notes and natural reverb",
-        "管弦乐 / Orchestral": "a majestic full orchestral arrangement with swelling strings and warm brass, maintaining a steady high-energy rhythm throughout",
-        "原声吉他 / Acoustic": "an acoustic guitar piece with gentle fingerpicking patterns and warm natural wood resonance",
-        "电子 / Electronic": "an electronic track with layered synthesizers, digital beats, and atmospheric pads",
-        "氛围 / Ambient": "a minimal ambient soundscape with long sustained tones, subtle textures, and no distinct rhythm",
-        "合成器浪潮 / Synthwave": "a pulsing Synthwave instrumental track with heavy analog bass, retro drum machines, neon-soaked pads, and a driving steady rhythm, no vocals, starting abruptly at full energy with zero intro",
-        "芯片音乐 / Chiptune": "a retro 8-bit instrumental chiptune track with square-wave melodies, simple waveforms, and nostalgic video game sound",
-        "Lo-fi / Lo-fi": "a lo-fi instrumental beat with vinyl crackle, mellow chords, soft drum loops, and a relaxed downtempo groove",
-        "史诗 / Epic": "an epic cinematic instrumental score with powerful brass, thundering percussion, soaring choir, and dramatic steady intensity, starting abruptly at full energy without any intro or build-up",
-        "悬疑 / Suspense": "a tense suspense instrumental score with low-frequency drones, sudden dissonant stabs, creeping tension, and unsettling silence",
-        "浪漫弦乐 / Romantic Strings": "a romantic instrumental string arrangement with lush violins, gentle cello, harp glissandos, and a tender sustained atmosphere",
-        "摇滚 / Rock": "an instrumental-only rock track with electric guitar riffs, driving drums, bass groove, and energetic dynamics, STRICTLY NO VOCALS, starting at full power with zero intro",
-        "爵士 / Jazz": "an instrumental jazz piece with walking bass, brushed drums, improvisational piano or saxophone, smoky club atmosphere, no vocals",
-        "嘻哈 / Hip-Hop": "an instrumental hip-hop beat with heavy 808 bass, crisp trap snares, hi-hat rolls, and a grooving rhythmic flow, STRICTLY NO VOCALS, dropping in at full energy with no intro",
-        "放克 / Funk": "an instrumental funk groove with a bouncy slap bassline, tight rhythm guitar, brass stabs, and an infectious syncopated rhythm, no vocals, kicking in immediately at full groove",
-        "纯人声合唱 / Acapella Choir": "a pure acapella choir with layered vocal harmonies and no instruments, evoking sacred, ethereal, or haunting atmosphere",
-        "极简拟音 / Minimalist Foley": "minimalist foley and ambient silence — only crisp physical sound effects like subtle clicks, soft whooshes, and spatial emptiness, with no melodic music at all",
-        "国风民乐 / Chinese Folk": "a traditional Chinese folk piece with guzheng, erhu, dizi bamboo flute, pipa, and flowing pentatonic melodies evoking ancient landscapes",
-        "戏曲 / Chinese Opera": "a stylized Chinese opera piece with clanging gongs, wooden clappers, piercing erhu, and dramatic vocal delivery in traditional theatrical style",
-        "古琴 / Guqin": "a solo guqin piece with deep resonant plucked silk strings, slow meditative pace, profound stillness, and subtle harmonic overtones",
+        "史诗战争 / Epic Orchestral": "a full orchestral score with powerful brass, thundering timpani, and swelling strings at a moderate tempo, building in intensity",
+        "动作追逐 / Action Chase": "driving percussion and fast string ostinatos at a fast tempo with sudden dynamic swells",
+        "紧张悬疑 / Tense Suspense": "low sustained string drones with sparse dissonant piano notes and sudden percussive stabs at a slow tempo",
+        "恐怖惊悚 / Horror Atmosphere": "deep low-frequency drones with sparse metallic scrapes and sudden dissonant swells at a very slow tempo",
+        "温馨治愈 / Warm & Gentle": "sparse solo piano notes at a slow tempo with soft sustained chords and a gentle fade at the end",
+        "浪漫爱情 / Romantic Strings": "lush violins and gentle cello at a slow tempo with harp glissandos, gradually swelling and fading",
+        "悲伤抒情 / Melancholic": "a slow solo cello melody with sparse piano accompaniment, gradually decreasing in volume",
+        "轻松喜剧 / Light Comedy": "playful pizzicato strings and light woodwinds at a brisk tempo with bouncy rhythmic accents",
+        "古风武侠 / Chinese Wuxia": "guqin and erhu with flowing pentatonic melodies at a slow tempo, joined by sparse percussion",
+        "科幻未来 / Sci-fi Electronic": "a low electronic pulse with atmospheric synth pads at a slow tempo and subtle rhythmic layers",
+        "神秘探索 / Mysterious Adventure": "warm woodwinds and soft strings at a moderate tempo with gentle dynamic swells",
+        "史诗悲剧 / Tragic Epic": "a slow orchestral theme with muted brass and low strings, fading out softly",
     }
 
     _ASPECTS = [
