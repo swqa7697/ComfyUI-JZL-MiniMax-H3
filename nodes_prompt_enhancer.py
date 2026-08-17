@@ -92,15 +92,20 @@ class JZL_MiniMaxPromptEnhancer:
     @staticmethod
     def _run_llm(bus, system_prompt, user_msg, force_offload=False, seed=0):
         """按 BUS 里的后端配置调用 LLM，返回生成文本。"""
-        llm_backend = str(bus.get("llm_backend", "local"))
         api_config = bus.get("api_config")
         llama_model = bus.get("llama_model")
         parameters = bus.get("parameters")
         save_states = bus.get("save_states", False)
 
-        if "api" in llm_backend and api_config:
+        # 优先沿用剧本处理器实际用的后端（use_api 标志）；缺失时回退到 llm_backend 字符串判断
+        use_api = bus.get("use_api")
+        if use_api is None:
+            llm_backend = str(bus.get("llm_backend") or "").lower()
+            use_api = "api" in llm_backend and bool(api_config)
+
+        if use_api and api_config:
             return JZL_MiniMax_ScriptProcessor._call_api(api_config, system_prompt, user_msg)
-        if "local" in llm_backend and llama_model is not None:
+        if not use_api and llama_model is not None:
             if not LLAMA_CPP_STORAGE.llm:
                 LLAMA_CPP_STORAGE.load_model(llama_model)
             try:

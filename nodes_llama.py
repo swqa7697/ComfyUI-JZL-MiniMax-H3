@@ -529,8 +529,26 @@ class JZL_MiniMax_ScriptProcessor:
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
-        # seed 参与缓存签名：改 seed 必须触发重新生成
-        return kwargs.get("seed", 0)
+        # 所有关键生成参数都参与缓存签名：只返回 seed 会导致切换后端/风格/时长等命中缓存，
+        # 剧本处理器不重跑，BUS 里仍是旧的后端配置（例如切成 API 后增强节点仍用本地模型）
+        return (
+            kwargs.get("seed", 0),
+            kwargs.get("llm_backend"),
+            kwargs.get("mode"),
+            kwargs.get("story_style"),
+            kwargs.get("segment_count"),
+            kwargs.get("segment_duration"),
+            kwargs.get("prompt_lang"),
+            kwargs.get("use_custom_rule"),
+            kwargs.get("enable_scene"),
+            kwargs.get("enable_props"),
+            kwargs.get("enable_video"),
+            kwargs.get("enable_audio"),
+            kwargs.get("story_name"),
+            kwargs.get("story_input"),
+            kwargs.get("preference"),
+            kwargs.get("custom_rule_path"),
+        )
 
     @classmethod
     def _parse_four_in_one(cls, content):
@@ -892,8 +910,10 @@ class JZL_MiniMax_ScriptProcessor:
             f.write(script_output)
 
         # BUS 输出：把模型/API/偏好/风格等参数打包，供「提示词增强」节点独立运行 LLM
+        # use_api = 剧本处理器实际使用的后端（增强节点直接沿用，避免字符串判断偏差）
         bus = {
             "llm_backend": llm_backend,
+            "use_api": bool("api" in str(llm_backend) and api_config),
             "llama_model": llama_model,
             "parameters": parameters,
             "api_config": api_config,
