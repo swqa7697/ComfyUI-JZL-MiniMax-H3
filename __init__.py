@@ -10,7 +10,7 @@ import os
 from server import PromptServer
 from aiohttp import web
 
-from .nodes import JZL_MiniMaxH3ReferenceToVideo, JZL_MiniMaxH3ReferenceToVideo2, JZL_MiniMaxH3CondSync
+from .nodes import JZL_MiniMaxH3ReferenceToVideo, JZL_MiniMaxH3ReferenceToVideo2, JZL_MiniMaxH3CondSync, JZL_MiniMaxH3ImageToVideoDual
 from .nodes_hailuo_video import JZL_HailuoH3VideoParams, JZL_HailuoH3VideoParamsPro
 from .nodes_list_dispatcher import JZL_ListDispatcher
 from .story_nodes import (
@@ -48,6 +48,7 @@ NODE_CLASS_MAPPINGS = {
     "JZL_MiniMaxH3ReferenceToVideo": JZL_MiniMaxH3ReferenceToVideo,
     "JZL_MiniMaxH3ReferenceToVideo2": JZL_MiniMaxH3ReferenceToVideo2,
     "JZL_MiniMaxH3CondSync": JZL_MiniMaxH3CondSync,
+    "JZL_MiniMaxH3ImageToVideoDual": JZL_MiniMaxH3ImageToVideoDual,
     "JZL_HailuoH3VideoParams": JZL_HailuoH3VideoParams,
     "JZL_HailuoH3VideoParamsPro": JZL_HailuoH3VideoParamsPro,
     "JZL_ListDispatcher": JZL_ListDispatcher,
@@ -77,6 +78,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JZL_MiniMaxH3ReferenceToVideo": "JZL - 🎬 MiniMax H3 参考编码",
     "JZL_MiniMaxH3ReferenceToVideo2": "JZL - 🎬 MiniMax H3 参考编码2",
     "JZL_MiniMaxH3CondSync": "JZL - 🌊 海螺H3二采条件同步",
+    "JZL_MiniMaxH3ImageToVideoDual": "JZL - 🎬 MiniMax H3 二采编码",
     "JZL_HailuoH3VideoParams": "JZL - 🌊 海螺H3视频参数",
     "JZL_HailuoH3VideoParamsPro": "JZL - 🌊 海螺H3视频参数Pro",
     "JZL_ListDispatcher": "JZL - 📋 列表分发",

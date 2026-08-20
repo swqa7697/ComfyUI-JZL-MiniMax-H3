@@ -9,7 +9,6 @@ Reference to Video (ref2va) — 100% 复刻官方 MiniMaxH3ReferenceToVideo，
 import math
 
 import torch
-import torch.nn.functional as F
 import torchaudio
 
 import nodes
@@ -300,11 +299,11 @@ class JZL_MiniMaxH3CondSync(io.ComfyNode):
     """MiniMax H3 二采条件同步。
 
     从放大后的 latent 自动读取目标空间尺寸，把 positive 里「首尾帧」
-    （minimax_keyframes）的 latent 插值对齐到该尺寸；纯文本（t2va）与
-    参考图/视频（ref2va 的 minimax_refs）原样透传。
+    （minimax_keyframes）的 latent 通过「解码→像素放大→重编码」对齐到该尺寸；
+    纯文本（t2va）与参考图/视频（ref2va 的 minimax_refs）原样透传。
 
     用于 latent 放大后的二次采样：复用一段的文本 token 与参考条件，
-    只对齐关键帧，免去二段重新编码 Qwen3-VL 与 VAE。
+    只重编码关键帧，免去二段重新编码 Qwen3-VL 文本。
     """
 
     @classmethod
@@ -313,17 +312,21 @@ class JZL_MiniMaxH3CondSync(io.ComfyNode):
             node_id="JZL_MiniMaxH3CondSync",
             description=(
                 "二采条件同步：从 latent 自动读取目标分辨率，把 MiniMax H3 首尾帧"
-                "（minimax_keyframes）的 latent 插值对齐到该尺寸；纯文本与参考图"
-                "（minimax_refs）原样透传。配合 latent 放大节点用于二次采样，"
-                "免去重新编码文本与参考。"
+                "（minimax_keyframes）的 latent 通过「解码→像素放大→重编码」对齐到"
+                "该尺寸（保真度优于直接插值）；纯文本与参考图（minimax_refs）"
+                "原样透传。配合 latent 放大节点用于二次采样，免去重新编码文本。"
             ),
             display_name="JZL - 🌊 海螺H3二采条件同步",
             category="JZL/MiniMax",
             inputs=[
                 io.Conditioning.Input("positive", tooltip="一段采样的 positive（含文本 token 与可选首尾帧/参考）"),
+                io.Vae.Input("vae", tooltip="视频 VAE，用于首尾帧高保真重编码（解码→像素放大→再编码）"),
                 io.Latent.Input("latent", tooltip="放大后的 AV latent，自动读 video 空间尺寸作为对齐目标"),
             ],
-            outputs=[io.Conditioning.Output(display_name="positive")],
+            outputs=[
+                io.Conditioning.Output(display_name="positive"),
+                io.Latent.Output(display_name="latent", tooltip="首帧修复后的 AV latent（video 第 0 帧已替换为干净首帧）"),
+            ],
         )
 
     @staticmethod
@@ -336,20 +339,45 @@ class JZL_MiniMaxH3CondSync(io.ComfyNode):
         return int(video.shape[-2]), int(video.shape[-1])
 
     @staticmethod
-    def _resize_keyframe_latent(z, new_h, new_w):
-        # z: [B, C, T, H, W] -> [B, C, T, new_h, new_w]（时间维 T 不变）
-        if z.dim() == 5:
-            b, c, t, h, w = z.shape
-            z4 = z.reshape(b, c * t, h, w)
-            z4 = F.interpolate(z4, size=(new_h, new_w), mode="bilinear", align_corners=False)
-            return z4.reshape(b, c, t, new_h, new_w)
-        if z.dim() == 4:
-            return F.interpolate(z, size=(new_h, new_w), mode="bilinear", align_corners=False)
-        return z
+    def _reencode_keyframe(vae, z, new_h, new_w):
+        # z: [1, 24, T, H/16, W/16] -> 高保真放大：解码回像素 → 像素放大 → 再编码
+        pixels = vae.decode(z)
+        if pixels.dim() == 5:
+            pixels = pixels.reshape(-1, pixels.shape[-3], pixels.shape[-2], pixels.shape[-1])
+        # pixels: [B, H, W, C]
+        p = pixels[..., :3].movedim(-1, 1)  # [B, C, H, W]
+        p = comfy.utils.common_upscale(p, new_w * 16, new_h * 16, "lanczos", "disabled")
+        p = p.movedim(1, -1)  # [B, H', W', C]
+        return vae.encode(p)
+
+    @staticmethod
+    def _repair_first_frame(latent, first_frame, new_h, new_w):
+        """用重编码后的干净首帧替换 video latent 第 0 帧，修复 upscaler 时间维边界污染。"""
+        if first_frame is None:
+            return latent
+        samples = latent.get("samples") if isinstance(latent, dict) else latent
+        if isinstance(samples, comfy.nested_tensor.NestedTensor):
+            video = samples.tensors[0]
+            if video.ndim < 5 or video.shape[-2] != new_h or video.shape[-1] != new_w:
+                return latent
+            video = video.clone()
+            ff = first_frame.to(device=video.device, dtype=video.dtype)
+            video[:, :, 0:1, :, :] = ff
+            new_samples = comfy.nested_tensor.NestedTensor([video] + list(samples.tensors[1:]))
+            return {**latent, "samples": new_samples} if isinstance(latent, dict) else new_samples
+        if isinstance(samples, torch.Tensor) and samples.ndim >= 5:
+            video = samples.clone()
+            ff = first_frame.to(device=video.device, dtype=video.dtype)
+            video[:, :, 0:1, :, :] = ff
+            if isinstance(latent, dict):
+                return {**latent, "samples": video}
+            return {"samples": video}
+        return latent
 
     @classmethod
-    def execute(cls, positive, latent) -> io.NodeOutput:
+    def execute(cls, positive, vae, latent) -> io.NodeOutput:
         new_h, new_w = cls._read_target_size(latent)
+        first_frame = None  # 重编码后的干净首帧，用于修复 video 第 0 帧
 
         out = []
         for item in positive:
@@ -366,9 +394,94 @@ class JZL_MiniMaxH3CondSync(io.ComfyNode):
                         nkf = dict(kf)  # 复制，避免污染原 conditioning
                         z = nkf.get("latent")
                         if z is not None and (z.shape[-2] != new_h or z.shape[-1] != new_w):
-                            nkf["latent"] = cls._resize_keyframe_latent(z, new_h, new_w)
+                            nkf["latent"] = cls._reencode_keyframe(vae, z, new_h, new_w)
+                        if nkf.get("resolved_frame_index") == 0 and first_frame is None:
+                            first_frame = nkf["latent"]
                         synced.append(nkf)
                     new_params["minimax_keyframes"] = synced
             out.append([cond, new_params])
 
-        return io.NodeOutput(out)
+        repaired = cls._repair_first_frame(latent, first_frame, new_h, new_w)
+        return io.NodeOutput(out, repaired)
+
+
+class JZL_MiniMaxH3ImageToVideoDual(io.ComfyNode):
+    """MiniMax H3 二采编码：一个节点同时输出一段 + 二段 positive。
+
+    fl2va/t2va: prompt (+ 可选首尾帧) -> 一段 conditioning + AV latent + 二段 conditioning。
+    二段分辨率 = 一段分辨率 × upscale_scale（对齐 32），二段重新编码文本与首尾帧视觉 token，
+    用于 latent 放大后的二次采样，避免复用低分辨率 positive 导致的首帧错位。
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="JZL_MiniMaxH3ImageToVideoDual",
+            description=(
+                "MiniMax H3 二采编码（fl2va/t2va）：一次输出一段 positive + 空 latent + 二采 positive。"
+                "二采按 upscale_scale 放大分辨率（对齐 32）并重新编码文本与首尾帧视觉 token，"
+                "用于 latent 放大后的二次采样，避免复用低分辨率 positive 导致的首帧错位。"
+            ),
+            display_name="JZL - 🎬 MiniMax H3 二采编码",
+            category="JZL/MiniMax",
+            inputs=[
+                io.Clip.Input("clip"),
+                io.Vae.Input("vae"),
+                io.String.Input("prompt", multiline=True, dynamic_prompts=True),
+                io.Int.Input("width", default=1344, min=32, max=nodes.MAX_RESOLUTION, step=32),
+                io.Int.Input("height", default=768, min=32, max=nodes.MAX_RESOLUTION, step=32),
+                io.Int.Input("length", default=124, min=5, max=3600, step=17,
+                    tooltip="24fps 帧数，吸附到模型 17k+5 网格（124 ≈ 5s，训练区间约 124-362）"),
+                io.Image.Input("first_frame", optional=True, tooltip="首帧图（图生视频）"),
+                io.Image.Input("last_frame", optional=True, tooltip="尾帧图（首尾帧生视频）"),
+                io.Float.Input("upscale_scale", display_name="二采放大倍数", default=1.0, min=1.0, max=4.0, step=0.05,
+                    tooltip="二采分辨率 = 一段分辨率 × 倍数（对齐 32，需与 latent 放大节点的 align 一致）。1.0 = 不二采。"),
+            ],
+            outputs=[
+                io.Conditioning.Output(display_name="positive"),
+                io.Latent.Output(),
+                io.Conditioning.Output(display_name="positive_2"),
+            ],
+        )
+
+    @classmethod
+    def _encode(cls, clip, vae, prompt, width, height, length, first_frame, last_frame):
+        """复刻官方 MiniMaxH3ImageToVideo 的编码逻辑。"""
+        latent, frame_count = _empty_av_latent(width, height, length)
+
+        images = []
+        keyframes = []
+        if first_frame is not None:
+            img = _resize(first_frame[:1], width, height, "disabled")
+            images.append(img)
+            keyframes.append({"resolved_frame_index": 0, "image": img})
+        if last_frame is not None:
+            img = _resize(last_frame[:1], width, height, "center")
+            images.append(img)
+            keyframes.append({"resolved_frame_index": frame_count - 1, "image": img})
+
+        tokens = clip.tokenize(prompt, images=images)
+        cond = clip.encode_from_tokens_scheduled(tokens)
+
+        if keyframes:
+            for kf in keyframes:
+                kf["latent"] = vae.encode(kf.pop("image"))
+            cond = node_helpers.conditioning_set_values(cond, {
+                "minimax_keyframes": keyframes,
+                "minimax_frame_count": frame_count,
+            })
+        return cond, latent
+
+    @classmethod
+    def execute(cls, clip, vae, prompt, width, height, length,
+                first_frame=None, last_frame=None, upscale_scale=1.0) -> io.NodeOutput:
+        cond, latent = cls._encode(clip, vae, prompt, width, height, length, first_frame, last_frame)
+
+        if upscale_scale > 1.0:
+            w2 = max(CANVAS_MULTIPLE, round(width * upscale_scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+            h2 = max(CANVAS_MULTIPLE, round(height * upscale_scale / CANVAS_MULTIPLE) * CANVAS_MULTIPLE)
+            cond2, _ = cls._encode(clip, vae, prompt, w2, h2, length, first_frame, last_frame)
+        else:
+            cond2 = cond
+
+        return io.NodeOutput(cond, latent, cond2)

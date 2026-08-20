@@ -6,7 +6,29 @@
     "display_name": "JZL - 🎬 MiniMax H3 Reference Encode 2"
   },
   "JZL_MiniMaxH3CondSync": {
-    "display_name": "JZL - 🌊 Hailuo H3 Cond Sync"
+    "display_name": "JZL - 🌊 Hailuo H3 Cond Sync",
+    "outputs": {
+      "0": {
+        "name": "Positive"
+      },
+      "1": {
+        "name": "Latent"
+      }
+    }
+  },
+  "JZL_MiniMaxH3ImageToVideoDual": {
+    "display_name": "JZL - 🎬 MiniMax H3 Dual Encode",
+    "outputs": {
+      "0": {
+        "name": "Positive"
+      },
+      "1": {
+        "name": "Latent"
+      },
+      "2": {
+        "name": "Positive 2"
+      }
+    }
   },
   "JZL_HailuoH3VideoParams": {
     "display_name": "JZL - 🌊 Hailuo H3 Video Params",

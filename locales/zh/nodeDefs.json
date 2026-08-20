@@ -316,10 +316,31 @@
     "display_name": "JZL - 🌊 海螺H3二采条件同步",
     "inputs": {
       "positive": { "name": "正向条件" },
+      "vae": { "name": "VAE" },
       "latent": { "name": "潜空间" }
     },
     "outputs": {
-      "0": { "name": "正向条件" }
+      "0": { "name": "正向条件" },
+      "1": { "name": "潜空间" }
+    }
+  },
+  "JZL_MiniMaxH3ImageToVideoDual": {
+    "display_name": "JZL - 🎬 MiniMax H3 二采编码",
+    "inputs": {
+      "clip": { "name": "CLIP文本编码器" },
+      "vae": { "name": "VAE" },
+      "prompt": { "name": "提示词" },
+      "width": { "name": "宽度" },
+      "height": { "name": "高度" },
+      "length": { "name": "时长(帧)" },
+      "first_frame": { "name": "首帧图" },
+      "last_frame": { "name": "尾帧图" },
+      "upscale_scale": { "name": "二采放大倍数" }
+    },
+    "outputs": {
+      "0": { "name": "正向条件" },
+      "1": { "name": "潜空间" },
+      "2": { "name": "二采正向条件" }
     }
   },
   "JZL_MiniMaxMusicCaption": {
