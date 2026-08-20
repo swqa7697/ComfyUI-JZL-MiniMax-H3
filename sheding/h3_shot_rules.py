@@ -33,7 +33,7 @@ non_diegetic_music: {...}
 六个字段之间各空一行。禁止用 markdown 代码块（```）包裹。
 
 #### subject_definitions（主体定义）
-用户的参考素材说明用「槽位名+素材名（描述）」声明映射，例如「角色A孙悟空（橙色武道服）」= 槽位「角色A」装的是「孙悟空」。⚠️ 槽位名是「角色A/角色B/场景A/道具A」这种【类型+字母 A~H】的代号，素材名是「孙悟空/龟仙人/月夜竹林」这种具体人名/物名。写任何 slots 时【只能用槽位代号】（角色A/角色B），【严禁用素材名】（孙悟空/龟仙人）。
+用户的参考素材说明用「资产名（描述）」声明，例如「图片1角色孙悟空（橙色武道服）」。资产名 = 前缀(图片/视频/音频) + 序号 + 类型 + 名称，是每个素材的唯一引用名。写任何 slots 时【必须原样照抄资产名】（如「图片1角色孙悟空」），严禁拆分（只写「图片1」或「孙悟空」）、严禁缩写、严禁自造。
 - 编号铁律：每个 [SHOT_START]...[SHOT_END] 块是一个独立视频，本块内的 <Picture N>/<Video N>/<Audio N> 一律从 1 重新编号，严禁沿用用户素材说明里的全局图片编号（即使用户写「图2是悟空」，若本块 slots 第 1 项是悟空，也要写 <Picture 1>）。
 - <Picture N>：本分段块用到的参考图，编号 = SCENE_INSTRUCTION.slots 下标 + 1（slots[0]=<Picture 1>，slots[1]=<Picture 2>），连续不跳号。
 - <Subject N>：写本块用到的可见内容（场景/角色/道具），每个 Subject 用其 <Picture N> 标注图片来源。若用户提供括号外貌描述，原样复述；若只给名字，只写「是 <Picture N> 中的 XXX」，严禁自编外貌/发色/服装/体型。
@@ -99,18 +99,18 @@ non_diegetic_music: {...}
 - slots 排序铁律：场景最前 → 角色按出场顺序 → 道具最后；本分段没用到的类型不写进 slots。
 - VIDEO_INSTRUCTION.slots 第 1 项 = <Video 1>，编号从 1 开始。
 - AUDIO_INSTRUCTION.slots 排序铁律：按本分段说话顺序排列——第一个开口的人排第 1 位（= <Audio 1> = ref_audio_0），第二个开口的人排第 2 位（= <Audio 2>），以此类推。严禁按槽位名 A/B/C 固定排。
-每个元素格式为「类型:槽位名」，类型取 场景/角色/道具/视频/音频；槽位名 = 类型前缀 + 字母（如「音频:音频A」）。禁止省略类型前缀写成「音频:A」、禁止槽位名带尾冒号（如「音频:A:」）。
-- 【槽位名】必须用用户素材说明里声明的槽位代号（如「角色A」「场景A」「道具A」「视频A」「音频A」——是「类型+字母」的代号，不是人名/物名），与素材节点标题一一对应。
-- 严禁用素材名当槽位名：即使这个角色叫「龟仙人」，slots 里也必须写「角色:角色B」（槽位代号），严禁写「角色:龟仙人」（素材名）。严禁自造槽位。槽位顺序不得错位。
+每个元素 = 用户素材说明里的资产名（如「图片1角色孙悟空」「音频1角色孙悟空」），原样照抄，不加任何前后缀。
+- 【资产名】必须原样照抄用户素材说明里声明的资产名（如「图片1角色孙悟空」「音频1角色孙悟空」），与素材节点一一对应。
+- 严禁拆分/缩写资产名、严禁用素材名当资产名（把「图片1角色孙悟空」写成「孙悟空」）、严禁自造资产名。槽位顺序：场景最前 → 角色按出场 → 道具 → 分镜 → 音频按说话顺序。
 
 ===SCENE_INSTRUCTION===
-{"shot":N,"slots":["场景:场景A","角色:角色A","角色:角色B","道具:道具A"]}
+{"shot":N,"slots":["图片1场景月夜竹林","图片2角色张伟","图片3角色小雨","图片4道具青铜剑"]}
 
 ===VIDEO_INSTRUCTION===
-{"shot":N,"slots":["视频:视频A"]}
+{"shot":N,"slots":["视频1分镜拔剑动作"]}
 
 ===AUDIO_INSTRUCTION===
-{"shot":N,"slots":["音频:音频A","音频:音频B"]}
+{"shot":N,"slots":["音频1角色张伟","音频2角色小雨"]}
 
 {Schedule_Rules}
 
@@ -157,13 +157,13 @@ overall_soundscape: 夜风穿过竹林沙沙作响，剑鞘摩擦发出金属轻
 non_diegetic_music: N/A
 
 ===SCENE_INSTRUCTION===
-{"shot":1,"slots":["场景:场景A","角色:角色A","角色:角色B","道具:道具A"]}
+{"shot":1,"slots":["图片1场景月夜竹林","图片2角色张伟","图片3角色小雨","图片4道具青铜剑"]}
 
 ===VIDEO_INSTRUCTION===
-{"shot":1,"slots":["视频:视频A"]}
+{"shot":1,"slots":["视频1分镜拔剑动作"]}
 
 ===AUDIO_INSTRUCTION===
-{"shot":1,"slots":["音频:音频A","音频:音频B"]}
+{"shot":1,"slots":["音频1角色张伟","音频2角色小雨"]}
 [SHOT_END]
 
 [SHOT_START]
@@ -203,13 +203,13 @@ overall_soundscape: 剑尖轻微嗡鸣，夜风穿过竹林，两人呼吸声清
 non_diegetic_music: N/A
 
 ===SCENE_INSTRUCTION===
-{"shot":2,"slots":["角色:角色A","角色:角色B"]}
+{"shot":2,"slots":["图片2角色张伟","图片3角色小雨"]}
 
 ===VIDEO_INSTRUCTION===
 {"shot":2,"slots":[]}
 
 ===AUDIO_INSTRUCTION===
-{"shot":2,"slots":["音频:音频A","音频:音频B"]}
+{"shot":2,"slots":["音频1角色张伟","音频2角色小雨"]}
 [SHOT_END]
 
 ⚠️ 注意：Shot_002 没用到背景和道具，slots 只写两个角色，所以 <Picture 1>=角色A、<Picture 2>=角色B——每段从 1 重新编号，不是沿用 Shot_001 的 <Picture 2>/<Picture 3>。
@@ -229,7 +229,7 @@ non_diegetic_music: N/A
 9. 禁止使用模糊代称（男性/女性/某人），必须用角色名或描述性标签。
 10. 禁止"同上""延续""依然是"等跨镜引用词。
 11. retention_analysis 破折号后必须列举 subject_definitions 里已定义的具体保留特征（禁止机械写"按 <Picture N> 原样保留"，也禁止自编未定义的外貌/道具细节）。
-12. 调度指令 slots 的槽位名必须写用户声明的完整槽位（角色A/场景A/道具A/视频A/音频A），严禁省略类型前缀只写字母（「道具:C」必须写「道具:道具C」）、严禁槽位名带尾冒号、严禁用素材名当槽位名（即使角色叫「龟仙人」，也必须写「角色:角色B」，严禁写「角色:龟仙人」）。
+12. 调度指令 slots 的每个元素必须原样照抄用户素材说明里的资产名（如「图片1角色孙悟空」），严禁拆分/缩写/改用素材名/自造。
 13. 每个 [SHOT_START]...[SHOT_END] 块内的 <Picture N>/<Video N>/<Audio N> 编号独立从 1 开始（= slots 下标+1），严禁跨分段沿用编号、严禁沿用用户素材说明里的全局图片编号。
 14. 每个分段必须输出完整块：[SHOT_START] + 分段信息九行 + ===H3_PROMPT=== 六段 + ===SCENE_INSTRUCTION=== + ===VIDEO_INSTRUCTION=== + ===AUDIO_INSTRUCTION=== + [SHOT_END]，缺任何一部分都算失败。
 15. non_diegetic_music 默认输出 N/A；仅当镜头语言偏好明确指定了背景音乐风格时才输出英文配乐描述（禁止写中文、禁止无中生有添加未指定的配乐）。
@@ -268,7 +268,7 @@ Exactly ONE blank line between fields. Do NOT wrap in markdown code blocks.
 
 #### subject_definitions
 Define one label per line for each reference actually used in this segment. Only define material the user provided; never invent.
-The user's material intro uses "slotName materialName (description)" to declare the mapping, e.g. "角色A孙悟空 (orange martial arts gi)" = slot "角色A" holds "孙悟空". ⚠️ The slotName is a [type + letter A~H] code like 角色A/角色B/场景A/道具A; the materialName is a concrete name like 孙悟空/龟仙人/Moonlit bamboo grove. In ANY slots, use ONLY the slot code (角色A/角色B), NEVER the material name (孙悟空/龟仙人).
+The user's material intro declares each asset as "assetName (description)", e.g. "图片1角色孙悟空 (orange martial arts gi)". The assetName = prefix(图片/视频/音频) + index + type + name, and is the unique reference name of that asset. In ANY slots, copy the assetName EXACTLY (e.g. "图片1角色孙悟空"); never split it (writing only "图片1" or "孙悟空"), never abbreviate, never invent.
 - Numbering rule: each [SHOT_START]...[SHOT_END] block is an independent video; <Picture N>/<Video N>/<Audio N> restart from 1 INSIDE this block. NEVER reuse the global image numbers from the user's material intro (even if the user wrote "image 2 is Wukong", if Wukong is the 1st slot in this block, write <Picture 1>).
 - <Picture N>: the reference image used in this segment block, numbered by SCENE_INSTRUCTION.slots index + 1 (slots[0]=<Picture 1>, slots[1]=<Picture 2>), continuous with no gaps.
 - <Subject N>: write the visible content used in this block (scene/character/prop), each Subject citing its <Picture N>. If the user gives a parenthesized appearance description, repeat it verbatim; if only a name, write only "is the XXX in <Picture N>" and never invent appearance/hair/outfit/build.
@@ -333,18 +333,18 @@ The slots array is the ONLY basis for dispatcher nodes to assign material, stric
 - Slots order rule: scene first → characters in order of appearance → props last; omit types not used in this segment.
 - VIDEO_INSTRUCTION.slots item 1 = <Video 1>; numbering restarts from 1.
 - AUDIO_INSTRUCTION.slots order rule: order by speaking order in this segment — the first speaker is item 1 (= <Audio 1> = ref_audio_0), the second speaker is item 2 (= <Audio 2>), and so on. NEVER order them by slot name A/B/C.
-Each element is "type:slotName" where type is scene/character/prop/video/audio; slotName = type prefix + letter (e.g. "audio:音频A"). NEVER drop the type prefix to write "audio:A", and NEVER add a trailing colon (e.g. "audio:A:").
-- The [slotName] MUST be a slot CODE declared in the user's material intro (e.g. "角色A", "场景A", "道具A", "视频A", "音频A" — a [type + letter] code, NOT a person/thing name) — matching the material node titles exactly.
-- NEVER use a material name as the slot name: even if the character is called 龟仙人, the slot MUST be written "角色:角色B" (slot code), NEVER "角色:龟仙人" (material name). Never invent slots. Slot order must not be misaligned.
+Each element is an assetName from the user's material intro (e.g. "图片1角色孙悟空", "音频1角色孙悟空"), copied exactly with no prefix/suffix added.
+- The [assetName] MUST be copied exactly from the user's material intro (e.g. "图片1角色孙悟空", "音频1角色孙悟空") — matching the material nodes exactly.
+- NEVER split/abbreviate an assetName, NEVER use a material name as the assetName (writing "孙悟空" instead of "图片1角色孙悟空"), NEVER invent asset names. Slot order: scene first → characters by appearance → props → storyboard → audio by speaking order.
 
 ===SCENE_INSTRUCTION===
-{"shot":N,"slots":["scene:场景A","character:角色A","character:角色B","prop:道具A"]}
+{"shot":N,"slots":["图片1场景Moonlit bamboo grove","图片2角色Zhang Wei","图片3角色Xiao Yu","图片4道具Bronze sword"]}
 
 ===VIDEO_INSTRUCTION===
-{"shot":N,"slots":["video:视频A"]}
+{"shot":N,"slots":["视频1分镜sword-draw action"]}
 
 ===AUDIO_INSTRUCTION===
-{"shot":N,"slots":["audio:音频A","audio:音频B"]}
+{"shot":N,"slots":["音频1角色Zhang Wei","音频2角色Xiao Yu"]}
 
 {Schedule_Rules}
 
@@ -391,13 +391,13 @@ overall_soundscape: Night wind rustles through the bamboo grove as the scabbard 
 non_diegetic_music: N/A
 
 ===SCENE_INSTRUCTION===
-{"shot":1,"slots":["scene:场景A","character:角色A","character:角色B","prop:道具A"]}
+{"shot":1,"slots":["图片1场景Moonlit bamboo grove","图片2角色Zhang Wei","图片3角色Xiao Yu","图片4道具Bronze sword"]}
 
 ===VIDEO_INSTRUCTION===
-{"shot":1,"slots":["video:视频A"]}
+{"shot":1,"slots":["视频1分镜sword-draw action"]}
 
 ===AUDIO_INSTRUCTION===
-{"shot":1,"slots":["audio:音频A","audio:音频B"]}
+{"shot":1,"slots":["音频1角色Zhang Wei","音频2角色Xiao Yu"]}
 [SHOT_END]
 
 [SHOT_START]
@@ -437,13 +437,13 @@ overall_soundscape: A faint hum from the sword tip, night wind through the bambo
 non_diegetic_music: N/A
 
 ===SCENE_INSTRUCTION===
-{"shot":2,"slots":["character:角色A","character:角色B"]}
+{"shot":2,"slots":["图片2角色Zhang Wei","图片3角色Xiao Yu"]}
 
 ===VIDEO_INSTRUCTION===
 {"shot":2,"slots":[]}
 
 ===AUDIO_INSTRUCTION===
-{"shot":2,"slots":["audio:音频A","audio:音频B"]}
+{"shot":2,"slots":["音频1角色Zhang Wei","音频2角色Xiao Yu"]}
 [SHOT_END]
 
 ⚠️ Note: Shot_002 uses no background and no props, so slots list only the two characters, giving <Picture 1>=角色A and <Picture 2>=角色B — numbering restarts from 1 in every segment, it does NOT continue Shot_001's <Picture 2>/<Picture 3>.
@@ -463,7 +463,7 @@ Output the remaining shots in the same format, Shot numbers zero-padded to three
 9. Do NOT use vague pronouns (the man/the woman/someone); use character names or descriptive labels.
 10. Do NOT use cross-shot references like "same as above" or "continues".
 11. After the dash in retention_analysis you MUST list concrete retained features already defined in subject_definitions (do NOT mechanically write "per <Picture N> fully retained", and do NOT invent appearance/prop details absent from subject_definitions).
-12. Scheduling instruction slots MUST use the user-declared FULL slot names (角色A/场景A/道具A/视频A/音频A); NEVER drop the type prefix to write a bare letter ("prop:C" must be "prop:道具C"), NEVER add a trailing colon, and NEVER use a material name as the slot name (even if the character is called 龟仙人, write "角色:角色B", never "角色:龟仙人").
+12. Every scheduling-instruction slot element MUST copy the assetName from the user's material intro exactly (e.g. "图片1角色孙悟空"); never split/abbreviate/substitute a material name/invent.
 13. <Picture N>/<Video N>/<Audio N> numbering restarts from 1 inside EVERY [SHOT_START]...[SHOT_END] block (= slots index + 1). NEVER continue numbering across shots, and NEVER reuse the global image numbers from the user's material intro.
 14. Every segment MUST output a complete block: [SHOT_START] + nine shot-info lines + ===H3_PROMPT=== six sections + ===SCENE_INSTRUCTION=== + ===VIDEO_INSTRUCTION=== + ===AUDIO_INSTRUCTION=== + [SHOT_END]. Missing any part is a failure.
 15. non_diegetic_music is N/A by default; output English score description ONLY when the camera-language preference explicitly specifies a background music style (never write Chinese, never invent an unspecified score).

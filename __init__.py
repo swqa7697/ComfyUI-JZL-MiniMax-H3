@@ -10,8 +10,8 @@ import os
 from server import PromptServer
 from aiohttp import web
 
-from .nodes import JZL_MiniMaxH3ReferenceToVideo, JZL_MiniMaxH3ReferenceToVideo2
-from .nodes_hailuo_video import JZL_HailuoH3VideoParams
+from .nodes import JZL_MiniMaxH3ReferenceToVideo, JZL_MiniMaxH3ReferenceToVideo2, JZL_MiniMaxH3CondSync
+from .nodes_hailuo_video import JZL_HailuoH3VideoParams, JZL_HailuoH3VideoParamsPro
 from .nodes_list_dispatcher import JZL_ListDispatcher
 from .story_nodes import (
     JZL_MiniMax_ShotFormatter,
@@ -36,13 +36,20 @@ from .nodes_music import JZL_MiniMaxMusicCaption, JZL_MiniMaxMusicCaptionDuet
 from .nodes_music_lyrics import JZL_MiniMaxMusicLyricsEditor
 from .nodes_ref_bus import JZL_MiniMaxH3RefBusOut, JZL_MiniMaxH3RefBusIn
 from .nodes_prompt_enhancer import JZL_MiniMaxPromptEnhancer
+from .nodes_asset_manager import (
+    JZL_MiniMaxAssetManager,
+    _read_asset_settings,
+    _write_asset_settings,
+)
 
 WEB_DIRECTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "js")
 
 NODE_CLASS_MAPPINGS = {
     "JZL_MiniMaxH3ReferenceToVideo": JZL_MiniMaxH3ReferenceToVideo,
     "JZL_MiniMaxH3ReferenceToVideo2": JZL_MiniMaxH3ReferenceToVideo2,
+    "JZL_MiniMaxH3CondSync": JZL_MiniMaxH3CondSync,
     "JZL_HailuoH3VideoParams": JZL_HailuoH3VideoParams,
+    "JZL_HailuoH3VideoParamsPro": JZL_HailuoH3VideoParamsPro,
     "JZL_ListDispatcher": JZL_ListDispatcher,
     "JZL_MiniMax_ShotFormatter": JZL_MiniMax_ShotFormatter,
     "JZL_MiniMax_SceneDispatcher": JZL_MiniMax_SceneDispatcher,
@@ -63,12 +70,15 @@ NODE_CLASS_MAPPINGS = {
     "JZL_MiniMaxH3RefBusOut": JZL_MiniMaxH3RefBusOut,
     "JZL_MiniMaxH3RefBusIn": JZL_MiniMaxH3RefBusIn,
     "JZL_MiniMaxPromptEnhancer": JZL_MiniMaxPromptEnhancer,
+    "JZL_MiniMaxAssetManager": JZL_MiniMaxAssetManager,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "JZL_MiniMaxH3ReferenceToVideo": "JZL - 🎬 MiniMax H3 参考编码",
     "JZL_MiniMaxH3ReferenceToVideo2": "JZL - 🎬 MiniMax H3 参考编码2",
+    "JZL_MiniMaxH3CondSync": "JZL - 🌊 海螺H3二采条件同步",
     "JZL_HailuoH3VideoParams": "JZL - 🌊 海螺H3视频参数",
+    "JZL_HailuoH3VideoParamsPro": "JZL - 🌊 海螺H3视频参数Pro",
     "JZL_ListDispatcher": "JZL - 📋 列表分发",
     "JZL_MiniMax_ShotFormatter": "JZL - 📋 分段处理中心",
     "JZL_MiniMax_SceneDispatcher": "JZL - 🎯 场景元素调度",
@@ -89,6 +99,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JZL_MiniMaxH3RefBusOut": "JZL - 🔗 MiniMax H3 参考总线（打包）",
     "JZL_MiniMaxH3RefBusIn": "JZL - 🔗 MiniMax H3 参考总线（解包）",
     "JZL_MiniMaxPromptEnhancer": "JZL - ✨ 提示词增强",
+    "JZL_MiniMaxAssetManager": "JZL - 🗂️ 漫剧资产管理",
 }
 
 
@@ -165,3 +176,52 @@ async def jzl_api_settings_post(request):
         return web.json_response({"ok": True, "settings": settings})
     except Exception as exc:
         return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+# ── 后端端点（漫剧资产管理弹窗读写 + 文件选择） ─────────────────
+
+@PromptServer.instance.routes.get("/jzl/assets")
+async def jzl_assets_get(request):
+    """读取资产配置（弹窗打开时回显）"""
+    return web.json_response({"ok": True, "settings": _read_asset_settings()})
+
+
+@PromptServer.instance.routes.post("/jzl/assets")
+async def jzl_assets_post(request):
+    """保存资产配置到磁盘"""
+    try:
+        payload = await request.json()
+        settings = payload if isinstance(payload, dict) else {}
+        _write_asset_settings(settings)
+        return web.json_response({"ok": True, "settings": settings})
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
+
+@PromptServer.instance.routes.post("/jzl/choose_asset_file")
+async def choose_asset_file(request):
+    """tkinter 文件选择器：按 kind(image/video/audio) 过滤文件类型"""
+    if not HAS_TKINTER:
+        return web.json_response({"path": "", "error": "当前环境缺少弹窗依赖"})
+    try:
+        data = await request.json()
+        kind = data.get("kind", "image")
+    except Exception:
+        kind = "image"
+
+    filetypes = {
+        "image": [("图片", "*.png *.jpg *.jpeg *.webp *.bmp *.gif"), ("所有文件", "*.*")],
+        "video": [("视频", "*.mp4 *.mov *.webm *.avi *.mkv"), ("所有文件", "*.*")],
+        "audio": [("音频", "*.wav *.mp3 *.flac *.ogg *.m4a"), ("所有文件", "*.*")],
+    }.get(kind, [("所有文件", "*.*")])
+    titles = {"image": "选择图片", "video": "选择视频", "audio": "选择音频"}
+
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        file_path = filedialog.askopenfilename(title=titles.get(kind, "选择文件"), filetypes=filetypes)
+        root.destroy()
+        return web.json_response({"path": file_path})
+    except Exception as e:
+        return web.json_response({"path": "", "error": f"弹窗调用失败: {str(e)}"})

@@ -175,6 +175,28 @@ def normalize_slots(info_json):
     return info_json
 
 
+def _get_from_pool(name, kind=None):
+    """从全局资产池按名取 tensor（无线传输）。kind 可选过滤 image/audio/video。"""
+    try:
+        from .nodes_asset_manager import JZL_ASSET_POOL
+    except Exception:
+        return None
+    if not JZL_ASSET_POOL:
+        return None
+    # 精确匹配
+    if name in JZL_ASSET_POOL:
+        item = JZL_ASSET_POOL[name]
+        if kind is None or item.get("kind") == kind:
+            return item.get("data")
+    # 模糊匹配（资产名 vs slot 名互相包含）
+    for key, item in JZL_ASSET_POOL.items():
+        if kind is not None and item.get("kind") != kind:
+            continue
+        if _match_name(name, key):
+            return item.get("data")
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════
 #  节点 1: 分段处理中心
 # ═══════════════════════════════════════════════════════════════
@@ -486,6 +508,12 @@ class JZL_MiniMax_SceneDispatcher2:
             if i >= 9:
                 break
             name = slot.split(":", 1)[-1].strip() if isinstance(slot, str) and ":" in slot else str(slot).strip()
+            # 优先从全局资产池取（无线传输）
+            tensor = _get_from_pool(name, kind="image")
+            if tensor is not None:
+                out[i] = tensor
+                continue
+            # 回退：固定接口 kwargs（旧工作流兼容）
             for key, tensor in kwargs.items():
                 if key in used or tensor is None or not isinstance(tensor, torch.Tensor):
                     continue
@@ -527,6 +555,12 @@ class JZL_MiniMax_AudioDispatcher2:
             if i >= 3:
                 break
             name = slot.split(":", 1)[-1].strip() if isinstance(slot, str) and ":" in slot else str(slot).strip()
+            # 优先从全局资产池取（无线传输）
+            value = _get_from_pool(name, kind="audio")
+            if value is not None:
+                out[i] = value
+                continue
+            # 回退：固定接口 kwargs（旧工作流兼容）
             for key, value in kwargs.items():
                 if key in used or value is None or _is_empty_audio(value):
                     continue
@@ -573,6 +607,12 @@ class JZL_MiniMax_VideoDispatcher2:
             if i >= 3:
                 break
             name = slot.split(":", 1)[-1].strip() if isinstance(slot, str) and ":" in slot else str(slot).strip()
+            # 优先从全局资产池取视频（IMAGE 序列，无线传输）
+            value = _get_from_pool(name, kind="video")
+            if value is not None:
+                vid_slots[i] = value
+                continue
+            # 回退：固定接口 kwargs（旧工作流兼容，含同名音轨配对）
             for key, value in kwargs.items():
                 if key in used or value is None or "（音频）" in key:
                     continue

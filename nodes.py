@@ -9,6 +9,7 @@ Reference to Video (ref2va) — 100% 复刻官方 MiniMaxH3ReferenceToVideo，
 import math
 
 import torch
+import torch.nn.functional as F
 import torchaudio
 
 import nodes
@@ -293,3 +294,81 @@ class JZL_MiniMaxH3ReferenceToVideo2(io.ComfyNode):
             ref_image_size=ref_image_size, ref_scale=ref_scale,
             ref_images=ref_images, ref_videos=ref_videos,
             ref_video_audios=ref_video_audios, ref_audios=ref_audios)
+
+
+class JZL_MiniMaxH3CondSync(io.ComfyNode):
+    """MiniMax H3 二采条件同步。
+
+    从放大后的 latent 自动读取目标空间尺寸，把 positive 里「首尾帧」
+    （minimax_keyframes）的 latent 插值对齐到该尺寸；纯文本（t2va）与
+    参考图/视频（ref2va 的 minimax_refs）原样透传。
+
+    用于 latent 放大后的二次采样：复用一段的文本 token 与参考条件，
+    只对齐关键帧，免去二段重新编码 Qwen3-VL 与 VAE。
+    """
+
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="JZL_MiniMaxH3CondSync",
+            description=(
+                "二采条件同步：从 latent 自动读取目标分辨率，把 MiniMax H3 首尾帧"
+                "（minimax_keyframes）的 latent 插值对齐到该尺寸；纯文本与参考图"
+                "（minimax_refs）原样透传。配合 latent 放大节点用于二次采样，"
+                "免去重新编码文本与参考。"
+            ),
+            display_name="JZL - 🌊 海螺H3二采条件同步",
+            category="JZL/MiniMax",
+            inputs=[
+                io.Conditioning.Input("positive", tooltip="一段采样的 positive（含文本 token 与可选首尾帧/参考）"),
+                io.Latent.Input("latent", tooltip="放大后的 AV latent，自动读 video 空间尺寸作为对齐目标"),
+            ],
+            outputs=[io.Conditioning.Output(display_name="positive")],
+        )
+
+    @staticmethod
+    def _read_target_size(latent):
+        samples = latent.get("samples") if isinstance(latent, dict) else latent
+        if isinstance(samples, comfy.nested_tensor.NestedTensor):
+            video = samples.tensors[0]
+        else:
+            video = samples
+        return int(video.shape[-2]), int(video.shape[-1])
+
+    @staticmethod
+    def _resize_keyframe_latent(z, new_h, new_w):
+        # z: [B, C, T, H, W] -> [B, C, T, new_h, new_w]（时间维 T 不变）
+        if z.dim() == 5:
+            b, c, t, h, w = z.shape
+            z4 = z.reshape(b, c * t, h, w)
+            z4 = F.interpolate(z4, size=(new_h, new_w), mode="bilinear", align_corners=False)
+            return z4.reshape(b, c, t, new_h, new_w)
+        if z.dim() == 4:
+            return F.interpolate(z, size=(new_h, new_w), mode="bilinear", align_corners=False)
+        return z
+
+    @classmethod
+    def execute(cls, positive, latent) -> io.NodeOutput:
+        new_h, new_w = cls._read_target_size(latent)
+
+        out = []
+        for item in positive:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                out.append(item)
+                continue
+            cond, params = item
+            new_params = dict(params) if isinstance(params, dict) else params
+            if isinstance(new_params, dict):
+                kfs = new_params.get("minimax_keyframes")
+                if kfs:
+                    synced = []
+                    for kf in kfs:
+                        nkf = dict(kf)  # 复制，避免污染原 conditioning
+                        z = nkf.get("latent")
+                        if z is not None and (z.shape[-2] != new_h or z.shape[-1] != new_w):
+                            nkf["latent"] = cls._resize_keyframe_latent(z, new_h, new_w)
+                        synced.append(nkf)
+                    new_params["minimax_keyframes"] = synced
+            out.append([cond, new_params])
+
+        return io.NodeOutput(out)

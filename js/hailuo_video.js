@@ -8,7 +8,7 @@
 
 import { app } from "../../scripts/app.js";
 
-const NODE_TYPE = "JZL_HailuoH3VideoParams";
+const NODE_TYPES = new Set(["JZL_HailuoH3VideoParams", "JZL_HailuoH3VideoParamsPro"]);
 
 const isZH = navigator.language.startsWith("zh");
 
@@ -33,7 +33,7 @@ app.registerExtension({
             if (!app.graph || !app.graph._nodes) return;
 
             for (const node of app.graph._nodes) {
-                if (node.type !== NODE_TYPE || !node.widgets) continue;
+                if (!NODE_TYPES.has(node.type) || !node.widgets) continue;
 
                 const wDisp = node.widgets.find(w => w.name === "frames_display");
                 const wDur = node.widgets.find(w => w.name === "duration");
