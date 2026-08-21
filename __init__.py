@@ -35,6 +35,7 @@ from .nodes_llama import (
 from .nodes_music import JZL_MiniMaxMusicCaption, JZL_MiniMaxMusicCaptionDuet
 from .nodes_music_lyrics import JZL_MiniMaxMusicLyricsEditor
 from .nodes_ref_bus import JZL_MiniMaxH3RefBusOut, JZL_MiniMaxH3RefBusIn
+from .nodes_ref2va_bus import JZL_MiniMaxH3Ref2vaBusOut, JZL_MiniMaxH3Ref2vaBusIn
 from .nodes_prompt_enhancer import JZL_MiniMaxPromptEnhancer
 from .nodes_asset_manager import (
     JZL_MiniMaxAssetManager,
@@ -70,6 +71,8 @@ NODE_CLASS_MAPPINGS = {
     "JZL_MiniMaxMusicLyricsEditor": JZL_MiniMaxMusicLyricsEditor,
     "JZL_MiniMaxH3RefBusOut": JZL_MiniMaxH3RefBusOut,
     "JZL_MiniMaxH3RefBusIn": JZL_MiniMaxH3RefBusIn,
+    "JZL_MiniMaxH3Ref2vaBusOut": JZL_MiniMaxH3Ref2vaBusOut,
+    "JZL_MiniMaxH3Ref2vaBusIn": JZL_MiniMaxH3Ref2vaBusIn,
     "JZL_MiniMaxPromptEnhancer": JZL_MiniMaxPromptEnhancer,
     "JZL_MiniMaxAssetManager": JZL_MiniMaxAssetManager,
 }
@@ -100,6 +103,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JZL_MiniMaxMusicLyricsEditor": "JZL - 🎵 MiniMax Music3 歌词编辑",
     "JZL_MiniMaxH3RefBusOut": "JZL - 🔗 MiniMax H3 参考总线（打包）",
     "JZL_MiniMaxH3RefBusIn": "JZL - 🔗 MiniMax H3 参考总线（解包）",
+    "JZL_MiniMaxH3Ref2vaBusOut": "JZL - 🔗 MiniMax H3 ref2va参考总线（打包）",
+    "JZL_MiniMaxH3Ref2vaBusIn": "JZL - 🔗 MiniMax H3 ref2va参考总线（解包）",
     "JZL_MiniMaxPromptEnhancer": "JZL - ✨ 提示词增强",
     "JZL_MiniMaxAssetManager": "JZL - 🗂️ 漫剧资产管理",
 }

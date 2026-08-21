@@ -12,23 +12,21 @@
 import { app } from "../../scripts/app.js";
 
 const PROCESSOR_TYPE = "JZL_MiniMax_ScriptProcessor";
-const HAILUO_TYPE = "JZL_HailuoH3VideoParams";
+const HAILUO_TYPES = new Set(["JZL_HailuoH3VideoParams", "JZL_HailuoH3VideoParamsPro"]);
 
 function dispatch(w, val) {
     if (!w) return;
-    if (w.element) {
-        w.element.value = val;
-        w.element.dispatchEvent(new Event("input", { bubbles: true }));
-    } else if (w.inputEl) {
-        w.inputEl.value = val;
-        w.inputEl.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-    if (w.callback) w.callback(val);
+    const el = w.element || w.inputEl;
+    if (!el) return;
+    el.value = val;
+    // 只触发原生事件让 ComfyUI 统一更新 value 和 callback；不手动调 callback，避免双重触发
+    const evt = el.tagName === "SELECT" ? "change" : "input";
+    el.dispatchEvent(new Event(evt, { bubbles: true }));
 }
 
 function syncProcessorToHailuo(graph) {
     const procNodes = graph._nodes.filter(n => n.type === PROCESSOR_TYPE);
-    const haiNodes = graph._nodes.filter(n => n.type === HAILUO_TYPE);
+    const haiNodes = graph._nodes.filter(n => HAILUO_TYPES.has(n.type));
     if (!procNodes.length || !haiNodes.length) return;
 
     const wDur = procNodes[0].widgets?.find(w => w.name === "segment_duration");
@@ -49,7 +47,7 @@ function syncProcessorToHailuo(graph) {
 
 function syncHailuoToProcessor(graph) {
     const procNodes = graph._nodes.filter(n => n.type === PROCESSOR_TYPE);
-    const haiNodes = graph._nodes.filter(n => n.type === HAILUO_TYPE);
+    const haiNodes = graph._nodes.filter(n => HAILUO_TYPES.has(n.type));
     if (!procNodes.length || !haiNodes.length) return;
 
     const wHai = haiNodes[0].widgets?.find(w => w.name === "duration");
@@ -92,7 +90,7 @@ app.registerExtension({
 
             // 检测海螺 duration 变化
             for (const node of app.graph._nodes) {
-                if (node.type !== HAILUO_TYPE || !node.widgets) continue;
+                if (!HAILUO_TYPES.has(node.type) || !node.widgets) continue;
                 const wDur = node.widgets.find(w => w.name === "duration");
                 if (!wDur) continue;
                 const v = Math.round(Number(wDur.value)) || 8;

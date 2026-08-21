@@ -221,6 +221,58 @@
       "0": { "name": "📋 资产清单" }
     }
   },
+  "JZL_MiniMaxH3Ref2vaBusOut": {
+    "display_name": "JZL - 🔗 MiniMax H3 ref2va参考总线（打包）",
+    "inputs": {
+      "ref_image_0": { "name": "🖼️ 参考图0" },
+      "ref_image_1": { "name": "🖼️ 参考图1" },
+      "ref_image_2": { "name": "🖼️ 参考图2" },
+      "ref_image_3": { "name": "🖼️ 参考图3" },
+      "ref_image_4": { "name": "🖼️ 参考图4" },
+      "ref_image_5": { "name": "🖼️ 参考图5" },
+      "ref_image_6": { "name": "🖼️ 参考图6" },
+      "ref_image_7": { "name": "🖼️ 参考图7" },
+      "ref_image_8": { "name": "🖼️ 参考图8" },
+      "ref_video_0": { "name": "🎬 参考视频0" },
+      "ref_video_1": { "name": "🎬 参考视频1" },
+      "ref_video_2": { "name": "🎬 参考视频2" },
+      "ref_video_audio_0": { "name": "🎧 视频音轨0" },
+      "ref_video_audio_1": { "name": "🎧 视频音轨1" },
+      "ref_video_audio_2": { "name": "🎧 视频音轨2" },
+      "ref_audio_0": { "name": "🎧 音频0" },
+      "ref_audio_1": { "name": "🎧 音频1" },
+      "ref_audio_2": { "name": "🎧 音频2" }
+    },
+    "outputs": {
+      "0": { "name": "🔗 ref2va参考总线" }
+    }
+  },
+  "JZL_MiniMaxH3Ref2vaBusIn": {
+    "display_name": "JZL - 🔗 MiniMax H3 ref2va参考总线（解包）",
+    "inputs": {
+      "bus": { "name": "🔗 ref2va参考总线" }
+    },
+    "outputs": {
+      "0": { "name": "🖼️ 参考图0" },
+      "1": { "name": "🖼️ 参考图1" },
+      "2": { "name": "🖼️ 参考图2" },
+      "3": { "name": "🖼️ 参考图3" },
+      "4": { "name": "🖼️ 参考图4" },
+      "5": { "name": "🖼️ 参考图5" },
+      "6": { "name": "🖼️ 参考图6" },
+      "7": { "name": "🖼️ 参考图7" },
+      "8": { "name": "🖼️ 参考图8" },
+      "9": { "name": "🎬 参考视频0" },
+      "10": { "name": "🎬 参考视频1" },
+      "11": { "name": "🎬 参考视频2" },
+      "12": { "name": "🎧 视频音轨0" },
+      "13": { "name": "🎧 视频音轨1" },
+      "14": { "name": "🎧 视频音轨2" },
+      "15": { "name": "🎧 音频0" },
+      "16": { "name": "🎧 音频1" },
+      "17": { "name": "🎧 音频2" }
+    }
+  },
   "JZL_MiniMaxAPISettings": {
     "display_name": "JZL - 🌐 API 设置",
     "inputs": {
