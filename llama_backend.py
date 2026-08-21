@@ -12,11 +12,21 @@ import torch
 import folder_paths
 import comfy.model_management as mm
 
-from llama_cpp import Llama
-from llama_cpp.llama_chat_format import (
-    Llava15ChatHandler, Llava16ChatHandler, MoondreamChatHandler,
-    NanoLlavaChatHandler, Llama3VisionAlphaChatHandler, MiniCPMv26ChatHandler
-)
+try:
+    from llama_cpp import Llama
+    from llama_cpp.llama_chat_format import (
+        Llava15ChatHandler, Llava16ChatHandler, MoondreamChatHandler,
+        NanoLlavaChatHandler, Llama3VisionAlphaChatHandler, MiniCPMv26ChatHandler
+    )
+    _HAS_LLAMA_CPP = True
+except Exception as _e:
+    # 未安装 llama-cpp-python：本地 LLM 推理不可用，其余节点照常加载
+    print(f"[JZL-llama] llama-cpp-python 未安装（本地模型不可用，在线 API 等其余节点正常）：{_e}")
+    Llama = None
+    Llava15ChatHandler = Llava16ChatHandler = MoondreamChatHandler = None
+    NanoLlavaChatHandler = Llama3VisionAlphaChatHandler = MiniCPMv26ChatHandler = None
+    _HAS_LLAMA_CPP = False
+
 from .support_llama.gguf_layers import get_layer_count
 
 
@@ -218,6 +228,10 @@ except Exception:
 
 chat_handlers += chat_handlers_extra
 
+# 未装 llama-cpp-python 时，下拉只保留 None（本地模型不可选）
+if not _HAS_LLAMA_CPP:
+    chat_handlers = ["None"]
+
 
 # =============================================================================
 # AnyType / 存储类
@@ -267,6 +281,12 @@ class LLAMA_CPP_STORAGE:
 
     @classmethod
     def load_model(cls, config):
+        if Llama is None:
+            raise RuntimeError(
+                "未安装 llama-cpp-python，无法加载本地模型。\n"
+                "请按 requirements.txt 安装：N卡 https://github.com/JamePeng/llama-cpp-python/releases"
+            )
+
         def get_chat_handler(chat_handler):
             match chat_handler:
                 case "Qwen3.5" | "Qwen3.5-Thinking" | "Qwen3.6" | "Qwen3.6-Thinking":
