@@ -607,6 +607,16 @@
     }
   },
   "JZL_MiniMaxAssetManager": {
-    "display_name": "JZL - 🗂️ Asset Manager"
+    "display_name": "MiniMax-H3 Generation Manager",
+    "inputs": {
+      "mode": { "name": "Generation Mode" },
+      "video_count": { "name": "Video Count" },
+      "prompt_input": { "name": "Prompt Input" }
+    },
+    "outputs": {
+      "0": { "name": "📋 Asset Manifest" },
+      "1": { "name": "Video Count" },
+      "2": { "name": "Prompt" }
+    }
   }
 }

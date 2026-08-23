@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "platform": "windows",
+  "architecture": "x64",
+  "backend": "rocm",
+  "backend_description": "locally built llama-server (rocm)",
+  "llama_cpp_tag": "b10436",
+  "llama_cpp_commit": "6fed9f6ff7a603b124cb8c5864fca6ea879f9f99",
+  "executable": "runtime/windows-x64/local/b10436/llama-server.exe",
+  "library_dirs": [
+    "runtime/windows-x64/local/b10436"
+  ],
+  "runtime_options": {
+    "n_gpu_layers": "auto",
+    "fit": true,
+    "fit_target_mib": 1536,
+    "flash_attention": "auto"
+  },
+  "detected_gpus": [
+    "AMD Radeon(TM) Graphics",
+    "AMD Radeon RX 7900 XTX"
+  ],
+  "version_output": "version: 0.1.0-dev (build 10436, commit 6fed9f6ff)\nbuilt with Clang 20.1.8 for Windows x86_64",
+  "devices_output": "Available devices:\n  Vulkan0: AMD Radeon RX 7900 XTX (24560 MiB, 23743 MiB free)",
+  "installed_at": "2026-08-22T13:49:47.866877+00:00",
+  "source": "local build"
+}

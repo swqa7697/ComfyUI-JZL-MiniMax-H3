@@ -213,12 +213,16 @@
     }
   },
   "JZL_MiniMaxAssetManager": {
-    "display_name": "JZL - 🗂️ 漫剧资产管理",
+    "display_name": "MiniMax-H3生成管理器",
     "inputs": {
-      "open_manager": { "name": "🗂️ 打开资产管理" }
+      "mode": { "name": "生成模式切换" },
+      "video_count": { "name": "生成视频数量" },
+      "prompt_input": { "name": "提示词输入" }
     },
     "outputs": {
-      "0": { "name": "📋 资产清单" }
+      "0": { "name": "📋 资产清单" },
+      "1": { "name": "生成视频数量" },
+      "2": { "name": "提示词" }
     }
   },
   "JZL_MiniMaxH3Ref2vaBusOut": {

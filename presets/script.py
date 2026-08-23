@@ -76,11 +76,6 @@ SEGMENT_COUNT_OPTIONS = {
     "16段": 16,
     "20段": 20,
     "24段": 24,
-    "30段": 30,
-    "36段": 36,
-    "42段": 42,
-    "48段": 48,
-    "56段": 56,
 }
 
 
@@ -160,7 +155,7 @@ def _extract_style_directing(style_text):
     """提取风格设定里的「核心导演语法」段落（写动作时必须逐条执行的部分）。"""
     if not style_text:
         return ""
-    m = re.search(r'## 核心导演语法(.*?)(?=## )', style_text, re.DOTALL)
+    m = re.search(r'## 核心导演语法(.*?)(?=(?<!#)## )', style_text, re.DOTALL)
     if not m:
         return ""
     return ("## 核心导演语法" + m.group(1)).rstrip()
@@ -175,6 +170,38 @@ def _extract_detail_length(preference_text):
         return m.group(1)
     return "350-500"
 
+
+def _build_material_table(ref_image_intro, ref_video_intro, ref_audio_intro):
+    """解析用户素材描述，生成「标签对照表」，供 LLM 严格按槽位名写 slots。
+
+    用户描述每行格式：「类型+字母 = 素材名（描述）」，如「角色A = 孙悟空（橙色武道服）」。
+    返回对照表文本；无素材时返回空串。
+    """
+    blocks = []
+    for kind, intro in (("图片", ref_image_intro), ("视频", ref_video_intro), ("音频", ref_audio_intro)):
+        if not intro or not intro.strip():
+            continue
+        rows = []
+        for line in str(intro).splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            m = re.match(r'^(角色|场景|道具|视频|音频|分镜|音效|音乐|其他)\s*([A-Za-z])\s*[=＝:：]\s*(.+)', line)
+            if not m:
+                continue
+            typ, slot, rest = m.group(1), m.group(2).upper(), m.group(3).strip()
+            if not rest:
+                continue
+            rows.append(f"- {typ}{slot} = {rest}")
+        if rows:
+            blocks.append(f"【{kind}】\n" + "\n".join(rows))
+    if not blocks:
+        return ""
+    return ("## 3.5 素材标签对照表（CRITICAL — slots 只能从这里取「类型:槽位名」）\n"
+            + "\n".join(blocks)
+            + "\n\n- 调度指令 slots 写「类型:槽位名」，如 场景:场景A、角色:角色A、道具:道具A、视频:视频A、音频:音频A，严禁写素材名（孙悟空）或自造槽位。\n"
+            "- subject_definitions 写素材名（<Subject N> 是 <Picture N> 中的孙悟空），括号里的外貌描述原样复述。\n"
+            "- 音频槽位对应说话人音色：本段谁开口说话，AUDIO_INSTRUCTION.slots 就写对应角色的「音频:音频X」，无对话分段音频 slots 写空。")
 
 def build_shot_prompt(
     user_story: str,
@@ -220,20 +247,8 @@ def build_shot_prompt(
     rules = rules.replace("{Preference_Directing}", (preference or "").strip() or "- （无额外镜头语言偏好，按故事风格与标准规则执行）")
     rules = rules.replace("{Custom_Rules_Directing}", (custom_rules or "").strip() or "- （无自定义规则）")
 
-    # 参考素材说明（可选）：让 LLM 知道有哪些参考素材、按编号规则写标签
-    ref_parts = []
-    if ref_image_intro and ref_image_intro.strip():
-        ref_parts.append(f"- 参考图片：{ref_image_intro.strip()}")
-    if ref_video_intro and ref_video_intro.strip():
-        ref_parts.append(f"- 参考视频：{ref_video_intro.strip()}")
-    if ref_audio_intro and ref_audio_intro.strip():
-        ref_parts.append(f"- 参考音频：{ref_audio_intro.strip()}")
-    if ref_parts:
-        reference_intro = ("## 3.5 参考素材说明\n" + "\n".join(ref_parts) +
-                           "\n\n每条说明「槽位名素材名（描述）」即声明映射：槽位名（如「角色A」「场景A」）与素材节点标题一一对应，素材名（如「孙悟空」）是提示词里 <Subject N> 写的内容。"
-                           "调度指令 slots 里写槽位名，subject_definitions 里写素材名，二者靠 <Picture N>/<Video N>/<Audio N> 编号绑定。")
-    else:
-        reference_intro = ""
+    # 参考素材说明：生成「标签对照表」（槽位名 → 素材名 → 描述），LLM 严格按表写 slots
+    reference_intro = _build_material_table(ref_image_intro, ref_video_intro, ref_audio_intro)
 
     return SCRIPT_SKELETON_V2.format(
         Mode_Instruction=mode_instruction.format(Segment_Count=segment_count),

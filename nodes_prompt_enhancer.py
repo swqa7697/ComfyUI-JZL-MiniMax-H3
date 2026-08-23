@@ -21,6 +21,9 @@ class JZL_MiniMaxPromptEnhancer:
 
     _SEGMENT_INFO_KEYS = ["标题", "时长", "景别", "运镜", "角色", "场景", "道具", "动作描述", "氛围光影"]
     _SEGMENT_INFO_KEYS_EN = ["Title", "Duration", "Shot size", "Camera", "Characters", "Scene", "Props", "Action", "Atmosphere"]
+    _CN_NUMS = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+                "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十",
+                "二十一", "二十二", "二十三", "二十四"]
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -87,6 +90,41 @@ class JZL_MiniMaxPromptEnhancer:
                 parts.append(f"{marker}\n{m.group(1).strip()}")
         return "\n".join(parts)
 
+    @staticmethod
+    def _collect_shots(text):
+        """提取文本中出现的 [Shot N] 编号（按出现顺序去重）。"""
+        ids = []
+        for m in re.finditer(r'\[Shot\s+(\d+)\]', text or ""):
+            n = int(m.group(1))
+            if n not in ids:
+                ids.append(n)
+        return ids
+
+    @classmethod
+    def _sync_retention_shots(cls, h3_body, new_dd):
+        """把 retention_analysis 里的 (出现在 [Shot ...]) / (appears in [Shot ...]) 引用
+        同步为润色后 detailed_description 的实际镜头编号，避免两者不一致。"""
+        shot_ids = cls._collect_shots(new_dd)
+        if not shot_ids:
+            return h3_body
+        shot_list = ", ".join(f"[Shot {n}]" for n in shot_ids)
+
+        ra_m = re.search(r'(?m)^retention_analysis\s*:\s*', h3_body)
+        if not ra_m:
+            return h3_body
+        content_start = ra_m.end()
+        tail = h3_body[content_start:]
+        next_m = re.search(r'(?m)^[a-z_]+\s*:\s*', tail)
+        content_end = content_start + (next_m.start() if next_m else len(tail))
+        ra = h3_body[content_start:content_end]
+
+        # 中文：<Subject 1> (出现在 [Shot 1], [Shot 2]): ...
+        ra = re.sub(r'\(出现在[^)]*\)', f'(出现在 {shot_list})', ra)
+        # 英文：<Subject 1> (appears in [Shot 1], [Shot 2]): ...
+        ra = re.sub(r'\(appears in [^)]*\)', f'(appears in {shot_list})', ra)
+
+        return h3_body[:content_start] + ra + h3_body[content_end:]
+
     # ── LLM 调用 ──────────────────────────────────────────────
 
     @staticmethod
@@ -106,7 +144,8 @@ class JZL_MiniMaxPromptEnhancer:
         if use_api and api_config:
             return JZL_MiniMax_ScriptProcessor._call_api(api_config, system_prompt, user_msg)
         if not use_api and llama_model is not None:
-            if not LLAMA_CPP_STORAGE.llm:
+            if not LLAMA_CPP_STORAGE.llm or LLAMA_CPP_STORAGE.current_config != llama_model:
+                print("[JZL-llama] 开始加载模型...")
                 LLAMA_CPP_STORAGE.load_model(llama_model)
             try:
                 _params = parameters.copy() if parameters else {}
@@ -178,6 +217,7 @@ class JZL_MiniMaxPromptEnhancer:
             return None  # LLM 失败，保留原块
 
         new_h3_body = h3_body[:content_start] + "\n" + new_dd + "\n" + h3_body[content_end:]
+        new_h3_body = cls._sync_retention_shots(new_h3_body, new_dd)
         return block[:h3_m.start()] + marker + new_h3_body + block[h3_m.end():]
 
     # ── 主执行 ────────────────────────────────────────────────
@@ -196,19 +236,28 @@ class JZL_MiniMaxPromptEnhancer:
 
         system_prompt = build_enhancer_prompt(lang, story_style, segment_duration, preference, custom_rules)
 
+        # 打印模式日志（API / 本地），与剧本处理器保持一致
+        use_api = bus.get("use_api")
+        if use_api is None:
+            _llm_backend = str(bus.get("llm_backend") or "").lower()
+            use_api = "api" in _llm_backend and bool(bus.get("api_config"))
+        print("[JZL-增强] 正在使用API模式增强提示词中..." if use_api else "[JZL-增强] 正在使用本地模式增强提示词中...")
+
         prefix, blocks = self._split_blocks(script_text)
         if not blocks:
             return ("[错误] 剧本输出里没有找到 [SHOT_START]...[SHOT_END] 分段块",)
 
         enhanced_blocks = []
         failed = 0
-        for block in blocks:
+        for idx, block in enumerate(blocks, 1):
             new_block = self._enhance_block(block, system_prompt, bus, lang, force_offload, seed)
             if new_block is None:
                 failed += 1
                 enhanced_blocks.append(block)
             else:
                 enhanced_blocks.append(new_block)
+            seg_label = self._CN_NUMS[idx - 1] if idx <= len(self._CN_NUMS) else str(idx)
+            print(f"[JZL-增强] 第{seg_label}段完成...")
 
         # 统计表（前缀）原样保留 + 增强后的分段块
         parts = [prefix] if prefix else []

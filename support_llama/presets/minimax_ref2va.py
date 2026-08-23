@@ -63,8 +63,8 @@ One line per reference label with relationship markers:
 - Audio: fully_copy, partially_copy, reference, weak_reference
 
 ```
-<Subject 1> (appears in [Shot 1], [Shot 3]): fully_preserved - appearance and clothing retained.
-<Audio 1>: reference - vocal timbre guides dialogue delivery without copying the original signal.
+<Subject 1> (appears in [Shot 1], [Shot 3]): fully_preserved - appearance and clothing.
+<Audio 1>: reference - <Subject 1>'s dialogue follows <Audio 1>.
 ```
 
 ## 4. detailed_description
@@ -104,8 +104,8 @@ retention_analysis:
 <Subject 2> (appears in [Shot 1], [Shot 2]): fully_preserved
 <Subject 3> (appears in [Shot 1], [Shot 2], [Shot 3]): fully_preserved
 <Subject 4> (appears in [Shot 1], [Shot 2]): fully_preserved
-<Audio 1>: reference — <Subject 3>'s dialogue follows <Audio 1>'s timbre.
-<Audio 2>: reference — <Subject 4>'s dialogue follows <Audio 2>'s timbre.
+<Audio 1>: reference — <Subject 3>'s dialogue follows <Audio 1>.
+<Audio 2>: reference — <Subject 4>'s dialogue follows <Audio 2>.
 
 detailed_description:
 The target video uses a realistic multi-camera sitcom style with warm indoor lighting.
@@ -192,7 +192,7 @@ non_diegetic_music:
 一段中文，以方括号任务类型前缀开头。任务类型：keyframe completion、reference generation、video editing、video continuation、audio reuse、audio reference，用 " + " 组合。
 
 ## 3. retention_analysis（保留分析）
-每个引用标签一行，使用关系标记（fully_preserved/partially_preserved/attribute_transfer/weak_reference 等），用中文描述保留情况。
+每个引用标签一行，使用关系标记（fully_preserved/partially_preserved/attribute_transfer/weak_reference 等），破折号后直接列举特征，严禁写「保留」二字。
 
 ## 4. detailed_description（详细描述）
 主体部分。用中文撰写描述内容。
@@ -224,12 +224,12 @@ summary:
 [reference generation + audio reference] 目标视频展现 <Subject 3> 在 <Subject 1> 中吃饼干。<Subject 4> 带着 <Subject 2> 入场，狗狗扑向饼干，引发三镜头互动。
 
 retention_analysis:
-<Subject 1> (出现在 [Shot 1], [Shot 2], [Shot 3]): fully_preserved - 砖墙、橙色沙发、咖啡桌全部保留。
-<Subject 2> (出现在 [Shot 1], [Shot 2]): fully_preserved - 萨摩耶的白色皮毛和特征保留。
-<Subject 3> (出现在 [Shot 1], [Shot 2], [Shot 3]): fully_preserved - 金发女子的外貌和粉色衬衫保留。
-<Subject 4> (出现在 [Shot 1], [Shot 2]): fully_preserved - 年轻男子的外貌和灰色连帽衫保留。
-<Audio 1>: reference — <Subject 3> 的对话遵循 <Audio 1> 的音色特征。
-<Audio 2>: reference — <Subject 4> 的对话遵循 <Audio 2> 的音色特征。
+<Subject 1> (出现在 [Shot 1], [Shot 2], [Shot 3]): fully_preserved - 砖墙、橙色沙发、咖啡桌。
+<Subject 2> (出现在 [Shot 1], [Shot 2]): fully_preserved - 萨摩耶的白色皮毛和特征。
+<Subject 3> (出现在 [Shot 1], [Shot 2], [Shot 3]): fully_preserved - 金发女子的外貌和粉色衬衫。
+<Subject 4> (出现在 [Shot 1], [Shot 2]): fully_preserved - 年轻男子的外貌和灰色连帽衫。
+<Audio 1>: reference — <Subject 3> 的对话遵循 <Audio 1>。
+<Audio 2>: reference — <Subject 4> 的对话遵循 <Audio 2>。
 
 detailed_description:
 目标视频采用写实多机位情景喜剧风格，暖色室内布光。

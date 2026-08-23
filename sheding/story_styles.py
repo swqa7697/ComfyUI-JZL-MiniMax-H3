@@ -663,3 +663,37 @@ STORY_STYLES = {
         "禁止紧张感全靠动作——静默中的微动更有杀机。"
     ),
 }
+
+
+# ═══════════════════════════════════════════════════════════════
+#  动态加载：优先从 styles/ 目录读取独立 .md 风格文件
+#  选风格 = 全量切换该文件；上方的 STORY_STYLES 字典仅作 fallback
+#  （styles/ 目录下至少有 1 个 .md 时，整表切换为目录内容）
+# ═══════════════════════════════════════════════════════════════
+import os as _os
+import re as _re
+
+_STYLES_DIR = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "styles")
+
+
+def _load_styles_from_dir():
+    styles = {}
+    if not _os.path.isdir(_STYLES_DIR):
+        return styles
+    names = [n for n in _os.listdir(_STYLES_DIR) if n.endswith(".md")]
+    names.sort()
+    for name in names:
+        key = _re.sub(r'^\d+[-_]\s*', '', name[:-3]).strip()
+        if not key:
+            continue
+        try:
+            with open(_os.path.join(_STYLES_DIR, name), encoding="utf-8") as _f:
+                styles[key] = _f.read().strip()
+        except Exception:
+            continue
+    return styles
+
+
+_loaded = _load_styles_from_dir()
+if _loaded:
+    STORY_STYLES = _loaded

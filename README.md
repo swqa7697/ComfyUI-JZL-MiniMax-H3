@@ -33,3 +33,24 @@ New-Item -ItemType Junction -Path "D:\...\ComfyUI\custom_nodes\ComfyUI-JZL-MiniM
 
 - ComfyUI（含 `comfy_api.latest`，即官方 MiniMax H3 节点可用的较新版本）
 - `torch`、`torchaudio`
+
+## 本地 LLM 运行时（llama-server）
+
+「模型加载 Pro / 剧本与镜头处理器」的本地 LLM/VLM 推理不再依赖 `llama-cpp-python`，改用 `llama-server` 子进程（进程隔离、跑完即停、自动释放显存）。
+
+首次使用本地模型前，请先运行安装器（仅用 Python 标准库，自动识别系统/架构/显卡，下载并校验固定 llama.cpp `b10436` 预编译运行时，零 pip 依赖）：
+
+- **Windows：双击 `install_runtime.bat` 一键安装**（自动定位 Python）
+- 或手动执行：
+
+```powershell
+cd custom_nodes\ComfyUI-JZL-MiniMax-H3
+..\..\..\python_embeded\python.exe install_runtime.py   # Windows 便携包
+# 或：python install_runtime.py
+```
+
+- `--dry-run` 只看检测结果与计划，不下载
+- `--list-backends` 查看当前机器可用后端
+- `--force` 强制重装
+
+> 已安装的 `llama-cpp-python` 无需卸载，也不会冲突（本节点已不再引用它）；想省磁盘可自行 `pip uninstall llama-cpp-python`。

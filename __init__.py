@@ -34,13 +34,17 @@ from .nodes_llama import (
 )
 from .nodes_music import JZL_MiniMaxMusicCaption, JZL_MiniMaxMusicCaptionDuet
 from .nodes_music_lyrics import JZL_MiniMaxMusicLyricsEditor
+from .nodes_h3_editor import JZL_MiniMaxH3PromptEditor
 from .nodes_ref_bus import JZL_MiniMaxH3RefBusOut, JZL_MiniMaxH3RefBusIn
 from .nodes_ref2va_bus import JZL_MiniMaxH3Ref2vaBusOut, JZL_MiniMaxH3Ref2vaBusIn
 from .nodes_prompt_enhancer import JZL_MiniMaxPromptEnhancer
 from .nodes_asset_manager import (
     JZL_MiniMaxAssetManager,
+    JZL_MiniMaxVideoSaveDistributor,
     _read_asset_settings,
     _write_asset_settings,
+    _read_manager_settings,
+    _write_manager_settings,
 )
 
 WEB_DIRECTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "js")
@@ -69,12 +73,14 @@ NODE_CLASS_MAPPINGS = {
     "JZL_MiniMaxMusicCaption": JZL_MiniMaxMusicCaption,
     "JZL_MiniMaxMusicCaptionDuet": JZL_MiniMaxMusicCaptionDuet,
     "JZL_MiniMaxMusicLyricsEditor": JZL_MiniMaxMusicLyricsEditor,
+    "JZL_MiniMaxH3PromptEditor": JZL_MiniMaxH3PromptEditor,
     "JZL_MiniMaxH3RefBusOut": JZL_MiniMaxH3RefBusOut,
     "JZL_MiniMaxH3RefBusIn": JZL_MiniMaxH3RefBusIn,
     "JZL_MiniMaxH3Ref2vaBusOut": JZL_MiniMaxH3Ref2vaBusOut,
     "JZL_MiniMaxH3Ref2vaBusIn": JZL_MiniMaxH3Ref2vaBusIn,
     "JZL_MiniMaxPromptEnhancer": JZL_MiniMaxPromptEnhancer,
     "JZL_MiniMaxAssetManager": JZL_MiniMaxAssetManager,
+    "JZL_MiniMaxVideoSaveDistributor": JZL_MiniMaxVideoSaveDistributor,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -101,12 +107,14 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JZL_MiniMaxMusicCaption": "JZL - 🎵 MiniMax Music3 提示词预设",
     "JZL_MiniMaxMusicCaptionDuet": "JZL - 🎵 MiniMax Music3 提示词预设（双人）",
     "JZL_MiniMaxMusicLyricsEditor": "JZL - 🎵 MiniMax Music3 歌词编辑",
+    "JZL_MiniMaxH3PromptEditor": "JZL - 📝 MiniMax H3 手写提示词",
     "JZL_MiniMaxH3RefBusOut": "JZL - 🔗 MiniMax H3 参考总线（打包）",
     "JZL_MiniMaxH3RefBusIn": "JZL - 🔗 MiniMax H3 参考总线（解包）",
     "JZL_MiniMaxH3Ref2vaBusOut": "JZL - 🔗 MiniMax H3 ref2va参考总线（打包）",
     "JZL_MiniMaxH3Ref2vaBusIn": "JZL - 🔗 MiniMax H3 ref2va参考总线（解包）",
     "JZL_MiniMaxPromptEnhancer": "JZL - ✨ 提示词增强",
-    "JZL_MiniMaxAssetManager": "JZL - 🗂️ 漫剧资产管理",
+    "JZL_MiniMaxAssetManager": "MiniMax-H3生成管理器",
+    "JZL_MiniMaxVideoSaveDistributor": "JZL - 💾 视频保存分配",
 }
 
 
@@ -185,7 +193,74 @@ async def jzl_api_settings_post(request):
         return web.json_response({"ok": False, "error": str(exc)}, status=500)
 
 
-# ── 后端端点（漫剧资产管理弹窗读写 + 文件选择） ─────────────────
+# ── 后端端点（漫剧资产管理弹窗读写 + 文件选择 + 图片预览） ─────────────────
+
+@PromptServer.instance.routes.get("/jzl/asset_preview")
+async def jzl_asset_preview(request):
+    """图片资产缩略图预览：返回长边 256 的 JPEG（仅允许图片扩展名）。"""
+    path = (request.query.get("path") or "").strip()
+    if not path:
+        return web.json_response({"error": "缺少 path"}, status=400)
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
+        return web.json_response({"error": "仅支持图片预览"}, status=400)
+    if not os.path.isfile(path):
+        return web.json_response({"error": "文件不存在"}, status=404)
+    try:
+        from PIL import Image, ImageOps
+        import io
+        img = Image.open(path)
+        img = ImageOps.exif_transpose(img)
+        img = img.convert("RGB")
+        img.thumbnail((256, 256), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=80)
+        return web.Response(body=buf.getvalue(), content_type="image/jpeg")
+    except Exception as exc:
+        return web.json_response({"error": f"预览失败：{exc}"}, status=500)
+
+
+@PromptServer.instance.routes.get("/jzl/manager")
+async def jzl_manager_get(request):
+    """读取短剧管理器统一配置 + MiniMax-H3 模型列表 + 本地 LLM 模型列表"""
+    try:
+        import folder_paths
+        from .llama_backend import chat_handlers as _ch
+        from .nodes_asset_manager import _list_models
+        all_llms = folder_paths.get_filename_list("LLM")
+        llm_list = [f for f in all_llms if "mmproj" not in f.lower()]
+        mmproj_list = ["None"] + [f for f in all_llms if "mmproj" in f.lower()]
+        diff_models = _list_models("diffusion_models")
+        clip_models = _list_models("clip")
+        vae_models = _list_models("vae")
+        lora_models = _list_models("loras")
+    except Exception:
+        llm_list, mmproj_list, _ch = [], ["None"], ["None"]
+        diff_models = clip_models = vae_models = lora_models = []
+    return web.json_response({
+        "ok": True,
+        "settings": _read_manager_settings(),
+        "llm_models": llm_list,
+        "mmproj_models": mmproj_list,
+        "chat_handlers": _ch,
+        "diffusion_models": diff_models,
+        "clip_models": clip_models,
+        "vae_models": vae_models,
+        "lora_models": lora_models,
+    })
+
+
+@PromptServer.instance.routes.post("/jzl/manager")
+async def jzl_manager_post(request):
+    """保存短剧管理器统一配置到磁盘"""
+    try:
+        payload = await request.json()
+        settings = payload if isinstance(payload, dict) else {}
+        _write_manager_settings(settings)
+        return web.json_response({"ok": True, "settings": settings})
+    except Exception as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
+
 
 @PromptServer.instance.routes.get("/jzl/assets")
 async def jzl_assets_get(request):

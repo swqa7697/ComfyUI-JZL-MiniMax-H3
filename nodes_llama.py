@@ -134,8 +134,8 @@ class JZL_LlamaModelLoaderPro:
                 "typical_p": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "temperature": ("FLOAT", {"default": 0.6, "min": 0.0, "max": 2.0, "step": 0.01,
                     "tooltip": "温度\n0.60 确保 [SHOT_START] 格式严谨，减少幻觉"}),
-                "repeat_penalty": ("FLOAT", {"default": 1.12, "min": 0.0, "max": 10.0, "step": 0.01,
-                    "tooltip": "重复惩罚\n1.12 避免多个分段运镜描述句式复读"}),
+                "repeat_penalty": ("FLOAT", {"default": 1.05, "min": 0.0, "max": 10.0, "step": 0.01,
+                    "tooltip": "重复惩罚\n1.05 轻微防句式复读，同时保留台词（太高会让 LLM 省略已在故事里写过的台词）"}),
                 "frequency_penalty": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "present_penalty": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 2.0, "step": 0.01}),
                 "mirostat_mode": ("INT", {"default": 0, "min": 0, "max": 2, "step": 1}),
@@ -144,6 +144,14 @@ class JZL_LlamaModelLoaderPro:
                 "state_uid": ("INT", {
                     "default": -1, "min": -1, "max": 999999, "step": 1,
                     "tooltip": "使用特定 ID 保存对话状态 (-1 = 使用节点 unique_id)"
+                }),
+                "backend": (["llama-server", "llama-cpp-python"], {
+                    "default": "llama-cpp-python",
+                    "tooltip": "本地推理后端：llama-cpp-python（默认，进程内）或 llama-server（子进程，需先运行 install_runtime.bat）"
+                }),
+                "gpu_device": (["auto", "0", "1", "2", "3"], {
+                    "default": "auto",
+                    "tooltip": "GPU 设备（仅 llama-server 后端）：auto = 自动跟随 ComfyUI 当前显卡；也可手动指定索引"
                 }),
             }
         }
@@ -157,7 +165,7 @@ class JZL_LlamaModelLoaderPro:
                   n_ctx, vram_limit, image_min_tokens, image_max_tokens,
                   max_tokens, top_k, top_p, min_p, typical_p,
                   temperature, repeat_penalty, frequency_penalty, present_penalty,
-                  mirostat_mode, mirostat_eta, mirostat_tau, state_uid):
+                  mirostat_mode, mirostat_eta, mirostat_tau, state_uid, backend, gpu_device):
         custom_config = {
             "model": model,
             "mmproj": mmproj,
@@ -165,7 +173,9 @@ class JZL_LlamaModelLoaderPro:
             "n_ctx": n_ctx,
             "vram_limit": vram_limit,
             "image_min_tokens": image_min_tokens,
-            "image_max_tokens": image_max_tokens
+            "image_max_tokens": image_max_tokens,
+            "backend": backend,
+            "gpu_device": gpu_device
         }
 
         parameters = {
@@ -184,10 +194,8 @@ class JZL_LlamaModelLoaderPro:
             "state_uid": state_uid,
         }
 
-        if not LLAMA_CPP_STORAGE.llm or LLAMA_CPP_STORAGE.current_config != custom_config:
-            print("[JZL-llama] 开始加载模型...")
-            LLAMA_CPP_STORAGE.load_model(custom_config)
-
+        # 惰性加载：本节点只产出配置，真正加载由「剧本与镜头处理器」在「本地模型」模式下按需执行，
+        # 这样选择「在线API」时彻底不加载本地模型（不占显存、不打本地加载日志）。
         return (custom_config, parameters)
 
 
@@ -204,8 +212,8 @@ class JZL_MiniMaxH3Preference:
 
     _SHOT_SIZES = ["根据剧情", "随机组合", "远景为主", "全景为主", "中景为主", "近景为主", "特写为主"]
     _SHOT_SIZE_HINTS = {
-        "根据剧情": "景别根据剧情需要自由选择，每个内部切镜 [Shot N] 用最合适的景别",
-        "随机组合": "一个视频内多种景别混合使用（远景/全景/中景/近景/特写随剧情递进变化），不同 [Shot N] 用不同景别，禁止整段只用一种景别",
+        "根据剧情": "景别根据剧情需要主动搭配：不同 [Shot N] 用最合适的景别，并按剧情递进（建立→推进→高潮→收束）安排远景/全景/中景/近景/特写的层次变化，禁止整段只用一两种",
+        "随机组合": "一个视频内多种景别混合使用（远景/全景/中景/近景/特写随剧情递进变化）。不同 [Shot N] 用不同景别，禁止整段只用一种景别；根据时长与剧情灵活搭配——长视频（10秒以上）用 4-6 种景别递进（建立→推进→高潮→收束），短视频用 2-3 种即可，绝不要只用一两种",
         "远景为主": "以远景（Extreme Long / Long）为主，角色在画面中占比较小，突出环境、空间关系与整体氛围",
         "全景为主": "以全景为主，完整呈现角色全身与场景全貌，交代人物与空间的关系",
         "中景为主": "以中景为主，角色腰部以上入画，兼顾肢体动作与面部表情",
@@ -215,8 +223,8 @@ class JZL_MiniMaxH3Preference:
 
     _CAMERA_MOVES = ["根据剧情", "随机组合", "固定机位", "推拉", "摇移", "俯仰", "升降", "环绕", "跟拍", "手持晃动", "旋转", "一镜到底"]
     _CAMERA_HINTS = {
-        "根据剧情": "运镜根据剧情需要自由选择，每个内部切镜 [Shot N] 用最合适的运镜",
-        "随机组合": "一个视频内多种运镜混合使用（推/拉/摇/移/跟/环绕/手持等穿插），不同 [Shot N] 用不同运镜，禁止整段只用一种运镜",
+        "根据剧情": "运镜根据剧情需要主动搭配：不同 [Shot N] 用最合适的运镜，随剧情起伏变换运镜类型（建立用全景摇移、对峙用环绕、爆发用快速推拉、追踪用跟拍），禁止整段只用一两种",
+        "随机组合": "一个视频内多种运镜混合使用（推/拉/摇/移/跟/环绕/手持等穿插）。不同 [Shot N] 用不同运镜，禁止整段只用一种运镜；根据时长与剧情灵活搭配——长视频用更多种运镜（4-6种）配合剧情起伏，短视频用 2-3 种即可，绝不要只用一两种",
         "固定机位": "以固定机位（Static Shot）为主，通过主体动作与构图变化叙事，不依赖镜头运动",
         "推拉": "以推拉镜头（Push In / Pull Out）为主，推镜强调、拉镜揭示环境",
         "摇移": "以摇移镜头（Pan / Truck）为主，横向展示空间与主体关系",
@@ -231,8 +239,8 @@ class JZL_MiniMaxH3Preference:
 
     _CUT_RHYTHMS = ["根据剧情", "随机组合", "一镜到底", "2~5镜", "5~9镜", "9~13镜", "13~18镜"]
     _CUT_HINTS = {
-        "根据剧情": "切镜次数根据剧情决定：打斗/追逐/爆发默认高频快切（每个动作 2-4 秒切一镜），抒情/静态才放慢；不得均分切镜",
-        "随机组合": "一个视频内切镜节奏混合：打斗快切（2-4 秒一镜）与长镜穿插，蓄力极静、爆发极动，不得均分切镜",
+        "根据剧情": "切镜次数根据剧情决定：打斗/追逐/爆发默认高频快切（每个动作 2-4 秒切一镜），抒情/静态才放慢；不得均分切镜，长短镜随剧情起伏交替",
+        "随机组合": "一个视频内切镜节奏混合：打斗快切（2-4 秒一镜）与长镜穿插，蓄力极静、爆发极动，不得均分切镜。根据剧情起伏调节——紧张段落切快、舒缓段落切慢，长短镜交替，禁止全程同一节奏",
         "一镜到底": "一镜到底：本镜只写一个 [Shot 1]，禁止切镜，只靠运镜改变视角",
         "2~5镜": "把本镜拆成 2-5 个 [Shot N] 切镜（单镜内部时间戳切镜）",
         "5~9镜": "把本镜拆成 5-9 个 [Shot N] 切镜（单镜内部时间戳切镜）",
@@ -249,19 +257,15 @@ class JZL_MiniMaxH3Preference:
     }
 
     _CREATIVE_REQS = [
-        "无特别要求", "节奏紧凑", "悬念反转", "情感细腻", "幽默搞笑", "视觉奇观",
-        "燃向热血", "治愈温暖", "暗黑压抑", "多反转结局", "开放式结局", "强冲突",
+        "无特别要求", "节奏紧凑", "舒缓留白", "情感细腻", "明快轻松",
+        "多反转结局", "开放式结局", "强冲突",
     ]
     _CREATIVE_HINTS = {
         "无特别要求": "",
         "节奏紧凑": "节奏紧凑，画面信息密度高，每个镜头都推进剧情，不拖沓",
-        "悬念反转": "设置悬念铺垫，结尾要有出人意料的反转",
+        "舒缓留白": "节奏舒缓，多留白与呼吸感，情感在静默与细节中沉淀",
         "情感细腻": "情感细腻，注重角色内心戏、微表情与情绪留白",
-        "幽默搞笑": "幽默搞笑，节奏轻快活泼，突出喜剧反差",
-        "视觉奇观": "注重视觉奇观，大场面、特效与震撼画面优先",
-        "燃向热血": "燃向热血，打斗要有打击感与力量传导，气氛高燃",
-        "治愈温暖": "治愈温暖，氛围舒缓放松，情感抚慰",
-        "暗黑压抑": "暗黑压抑，保持紧绷的戏剧张力与压迫感",
+        "明快轻松": "基调明快轻松，节奏轻快活泼，气氛欢快不压抑",
         "多反转结局": "剧情多反转，层层递进，不断推翻观众预期",
         "开放式结局": "开放式结局，留白给观众想象空间",
         "强冲突": "角色矛盾尖锐直接，冲突强烈，张力十足",
@@ -594,48 +598,108 @@ class JZL_MiniMax_ScriptProcessor:
                 p = p.strip()
                 if p and p != "无":
                     slots.append(f"道具:{p}")
-        return json.dumps({"shot": shot_num, "slots": slots}, ensure_ascii=False)
+        return json.dumps({"slots": slots}, ensure_ascii=False)
 
     @classmethod
     def _extract_video_info(cls, shot, shot_num):
         # 容错：视频素材名无法从结构化字段推断，slots 置空（调度节点全收兜底）
-        return json.dumps({"shot": shot_num, "slots": []}, ensure_ascii=False)
+        return json.dumps({"slots": []}, ensure_ascii=False)
 
     @classmethod
     def _extract_audio_info(cls, shot, shot_num):
-        return json.dumps({"shot": shot_num, "slots": []}, ensure_ascii=False)
+        return json.dumps({"slots": []}, ensure_ascii=False)
 
     @classmethod
-    def _build_stat_table(cls, scene_list, segment_count):
+    def _parse_material_intro(cls, ref_image_intro, ref_video_intro, ref_audio_intro):
+        """从用户素材声明（图片/视频/音频描述）解析角色/场景/道具清单。
+
+        只统计用户声明的元素（如「角色A = 孙悟空（描述）」→ 角色「孙悟空」），
+        不含 LLM 在分段里幻想的元素。
+        """
         chars, scenes, props = [], [], []
-        for s in scene_list:
-            try:
-                d = json.loads(s) if isinstance(s, str) else (s or {})
-            except Exception:
-                d = {}
-            for slot in d.get("slots", []):
-                if isinstance(slot, str) and ":" in slot:
-                    typ, name = slot.split(":", 1)
-                    typ, name = typ.strip(), name.strip()
-                else:
-                    typ, name = "", str(slot).strip()
+        for intro in (ref_image_intro, ref_video_intro, ref_audio_intro):
+            if not intro:
+                continue
+            for line in str(intro).splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                m = re.match(r'^(角色|场景|道具)\s*[A-Za-z]?\s*[=＝:：]\s*(.+)', line)
+                if not m:
+                    continue
+                typ = m.group(1)
+                name = re.sub(r'[（(].*?[)）]', '', m.group(2)).strip()
                 if not name:
                     continue
-                if "场景" in typ or typ == "scene":
-                    if name not in scenes:
-                        scenes.append(name)
-                elif "角色" in typ or typ == "character":
-                    if name not in chars:
-                        chars.append(name)
-                elif "道具" in typ or typ == "prop":
-                    if name not in props:
-                        props.append(name)
+                if typ == "角色" and name not in chars:
+                    chars.append(name)
+                elif typ == "场景" and name not in scenes:
+                    scenes.append(name)
+                elif typ == "道具" and name not in props:
+                    props.append(name)
+        return chars, scenes, props
+
+    @classmethod
+    def _build_stat_table(cls, chars, scenes, props, segment_count):
+        """统计表：只显示用户素材声明里的角色/场景/道具（不含 LLM 幻想元素）。"""
         lines = ["[Statistical table]"]
         lines.append(f"角色共{len(chars)}个：{'、'.join(chars) if chars else '无'}")
         lines.append(f"场景共{len(scenes)}个：{'、'.join(scenes) if scenes else '无'}")
         lines.append(f"道具共{len(props)}个：{'、'.join(props) if props else '无'}")
         lines.append(f"分段共{segment_count}个")
         return "\n".join(lines)
+
+    @classmethod
+    def _build_slot_map(cls, ref_image_intro, ref_video_intro, ref_audio_intro):
+        """构建槽位映射：type_map["角色A"]=(类型,素材名)、name_map["孙悟空"]="角色A"，用于 slots 二次纠错。"""
+        type_map, name_map = {}, {}
+        for intro in (ref_image_intro, ref_video_intro, ref_audio_intro):
+            if not intro:
+                continue
+            for line in str(intro).splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                m = re.match(r'^(角色|场景|道具|视频|音频|分镜|音效|音乐|其他)\s*([A-Za-z])\s*[=＝:：]\s*(.+)', line)
+                if not m:
+                    continue
+                typ, slot, rest = m.group(1), m.group(2).upper(), m.group(3).strip()
+                name = re.sub(r'[（(].*?[)）]', '', rest).strip()
+                key = f"{typ}{slot}"
+                type_map[key] = (typ, name)
+                if name and name not in name_map:
+                    name_map[name] = key
+        return type_map, name_map
+
+    @classmethod
+    def _fix_slots_by_map(cls, info_json, name_map):
+        """按「素材名→槽位名」映射二次纠错 slots（误写素材名/错类型槽位拉回正确槽位）。"""
+        try:
+            d = json.loads(info_json) if isinstance(info_json, str) else (info_json or {})
+        except Exception:
+            return info_json
+        if not isinstance(d, dict) or not isinstance(d.get("slots"), list):
+            return info_json
+        fixed, changed = [], False
+        for slot in d["slots"]:
+            if not isinstance(slot, str) or ":" not in slot:
+                fixed.append(slot)
+                continue
+            typ, name = slot.split(":", 1)
+            typ, name = typ.strip(), name.strip().rstrip(":：")
+            # name 是素材名 → 反查正确槽位 key（如「孙悟空」→「角色A」）
+            if name in name_map:
+                key = name_map[name]
+                m = re.match(r'^(角色|场景|道具|视频|音频|分镜|音效|音乐|其他)([A-Za-z])$', key)
+                if m:
+                    fixed.append(f"{m.group(1)}:{key}")
+                    changed = True
+                    continue
+            fixed.append(f"{typ}:{name}")
+        if changed:
+            d["slots"] = fixed
+            return json.dumps(d, ensure_ascii=False)
+        return info_json
 
     @staticmethod
     def _load_custom_rules(path):
@@ -679,7 +743,7 @@ class JZL_MiniMax_ScriptProcessor:
         return "\n".join(kept)
 
     @staticmethod
-    def _validate_slots(scene_info, video_info, audio_info):
+    def _validate_slots(scene_info, video_info, audio_info, shot_num=None):
         """校验调度指令 slots 槽位名是否符合契约，返回告警列表。
 
         合法格式（与调度节点 _match_name 的宽松匹配一致）：
@@ -703,7 +767,7 @@ class JZL_MiniMax_ScriptProcessor:
                 typ = typ.strip()
                 name = name.strip().rstrip(":：")
                 if (typ not in zh_types and typ not in en_types) or not name_pat.match(name):
-                    warnings.append(f"[⚠️ 槽位名异常] 第{d.get('shot', '?')}段 {label}调度 slots 含「{slot}」——槽位名必须是 A~H 字母（如「音频:D」）或 类型+A~H（如「音频:音频D」），不是素材名/描述")
+                    warnings.append(f"[⚠️ 槽位名异常] 第{shot_num if shot_num else '?'}段 {label}调度 slots 含「{slot}」——槽位名必须是 A~H 字母（如「音频:D」）或 类型+A~H（如「音频:音频D」），不是素材名/描述")
         return warnings
 
     @staticmethod
@@ -770,6 +834,7 @@ class JZL_MiniMax_ScriptProcessor:
         temperature = cfg.get("temperature", 0.6)
         max_tokens = cfg.get("max_tokens", 8192)
         thinking = cfg.get("thinking")  # "enabled" / "disabled" / None
+        print(f"[JZL-API] 调用 {provider}，模型：{model}")
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_msg},
@@ -810,9 +875,11 @@ class JZL_MiniMax_ScriptProcessor:
         user_msg = f"请生成恰好 {segment_count} 个分段，每段视频固定 {segment_duration} 秒，输出 [SHOT_START]...[SHOT_END] 完整块（分段信息 + 六段提示词 + 调度指令）。"
 
         if "api" in str(llm_backend) and api_config:
+            print("[JZL-API] 使用在线 API 生成，跳过本地模型加载")
             result = self._call_api(api_config, system_prompt, user_msg)
         elif "local" in str(llm_backend) and llama_model is not None:
-            if not LLAMA_CPP_STORAGE.llm:
+            if not LLAMA_CPP_STORAGE.llm or LLAMA_CPP_STORAGE.current_config != llama_model:
+                print("[JZL-llama] 开始加载模型...")
                 LLAMA_CPP_STORAGE.load_model(llama_model)
             try:
                 _params = parameters.copy() if parameters else {}
@@ -838,6 +905,7 @@ class JZL_MiniMax_ScriptProcessor:
         h3_list, scene_list, video_list, audio_list = [], [], [], []
         cleaned_shots = []
         slot_warnings = []
+        _, _slot_name_map = self._build_slot_map(ref_image_intro, ref_video_intro, ref_audio_intro)
         if shots:
             base_dir = _get_output_dir(story_name, "H3提示词")
             _, next_ver = _find_latest_version(base_dir)
@@ -860,11 +928,15 @@ class JZL_MiniMax_ScriptProcessor:
                 scene_info = normalize_slots(scene_info)
                 video_info = normalize_slots(video_info)
                 audio_info = normalize_slots(audio_info)
-                slot_warnings.extend(self._validate_slots(scene_info, video_info, audio_info))
+                # 二次纠错：素材名反查槽位名（对照表），修正「角色:孙悟空」→「角色:角色A」等
+                scene_info = self._fix_slots_by_map(scene_info, _slot_name_map)
+                video_info = self._fix_slots_by_map(video_info, _slot_name_map)
+                audio_info = self._fix_slots_by_map(audio_info, _slot_name_map)
+                slot_warnings.extend(self._validate_slots(scene_info, video_info, audio_info, shot_num))
                 # 无对话分段：清空音频调度、删除 <Audio N> 定义与误用的 (Sx)
                 has_dialogue = self._has_dialogue(h3_text)
                 if not has_dialogue:
-                    audio_info = json.dumps({"shot": shot_num, "slots": []}, ensure_ascii=False)
+                    audio_info = json.dumps({"slots": []}, ensure_ascii=False)
                     h3_text = re.sub(r'<Audio \d+>[^\n]*\n?', '', h3_text)
                     h3_text = re.sub(r'\s*\((S\d+)\)', '', h3_text)
                 h3_list.append(h3_text)
@@ -883,8 +955,9 @@ class JZL_MiniMax_ScriptProcessor:
                     if enable_audio:
                         f.write(f"===AUDIO_INSTRUCTION===\n{audio_info}\n")
 
-        # 统计表由节点计算，保证准确（方便用户准备素材），分段数用「要求的数量」
-        stat_table = self._build_stat_table(scene_list, segment_count)
+        # 统计表：只统计用户素材声明里的角色/场景/道具（不含 LLM 幻想元素），分段数用「要求的数量」
+        stat_chars, stat_scenes, stat_props = self._parse_material_intro(ref_image_intro, ref_video_intro, ref_audio_intro)
+        stat_table = self._build_stat_table(stat_chars, stat_scenes, stat_props, segment_count)
 
         # 槽位名校验告警（发现「天空」这类把描述当槽位名的情况，提示用户）
         if slot_warnings:
@@ -897,10 +970,21 @@ class JZL_MiniMax_ScriptProcessor:
                           f"\n[⚠️ 分段数量不符] 要求 {segment_count} 段，实际解析到 {actual_count} 段。"
                           "请检查 LLM 输出是否被截断，或重新生成。")
 
-        # 剧本输出：统计表 + 清理后的分段原文（禁用段已删除、无对话分段已去音频）
+        # 提取生成模式的故事正文（「【故事】」到第一个 [SHOT_START] 之间，仅供用户查看）
+        story_body = ""
+        if "生成" in mode:
+            m = re.search(r'【故事】\s*(.*?)(?=\[SHOT_START\]|$)', result or "", re.DOTALL)
+            if m:
+                story_body = m.group(1).strip()
+
+        # 剧本输出：故事内容块（生成模式）+ 统计表 + 清理后的分段原文
         if shots:
             cleaned_result = "\n\n".join(f"[SHOT_START]\n{s}\n[SHOT_END]" for s in cleaned_shots)
-            script_output = stat_table + "\n\n" + cleaned_result
+            if story_body:
+                script_output = (f"[生成模式扩展后的故事内容]\n****\n{story_body}\n*****\n\n"
+                                 + stat_table + "\n\n" + cleaned_result)
+            else:
+                script_output = stat_table + "\n\n" + cleaned_result
         else:
             script_output = result
 

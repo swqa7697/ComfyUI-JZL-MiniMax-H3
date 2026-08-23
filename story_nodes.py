@@ -234,7 +234,7 @@ class JZL_MiniMax_ShotFormatter:
         （槽位名是 场景A~H/角色A~H/道具A~H），无法可靠反推映射。
         故留空 slots，由调度节点输出空、用户手动补线，避免用错误槽位名导致错配。
         """
-        return json.dumps({"shot": shot_num, "slots": []}, ensure_ascii=False)
+        return json.dumps({"slots": []}, ensure_ascii=False)
 
     def execute(self, reshoot_mode, shot_text=None, _reshoot_path=None):
         # ── 重拍: 只读选中的本地文件 ──
@@ -261,9 +261,9 @@ class JZL_MiniMax_ShotFormatter:
             if scene in ("", "{}"):
                 scene = self._rebuild_scene(shot["raw"], shot_num)
             if vid in ("", "{}"):
-                vid = json.dumps({"shot": shot_num, "slots": []}, ensure_ascii=False)
+                vid = json.dumps({"slots": []}, ensure_ascii=False)
             if aud in ("", "{}"):
-                aud = json.dumps({"shot": shot_num, "slots": []}, ensure_ascii=False)
+                aud = json.dumps({"slots": []}, ensure_ascii=False)
             # 清洗槽位名小错误（缺类型前缀「道具:C」→「道具:道具C」、尾冒号）
             scene = normalize_slots(scene)
             vid = normalize_slots(vid)
