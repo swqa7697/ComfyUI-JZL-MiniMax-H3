@@ -90,7 +90,7 @@ class JZL_HailuoH3VideoParamsPro:
                     "tooltip": "参考图放大系数 — 接入「MiniMax H3 参考编码」的参考值放大"
                 }),
                 "upscale_scale": ("FLOAT", {
-                    "default": 1.5, "min": 1.1, "max": 4.0, "step": 0.05,
+                    "default": 1.5, "min": 1.0, "max": 4.0, "step": 0.05,
                     "tooltip": "二采放大倍数 — 接入 Minimax H3 Latent Upscaler (3D) 的 scale。二采条件同步自动读放大后 latent 尺寸，无需接此参数"
                 }),
             }

@@ -220,6 +220,49 @@ async def jzl_asset_preview(request):
         return web.json_response({"error": f"预览失败：{exc}"}, status=500)
 
 
+@PromptServer.instance.routes.get("/jzl/asset_full")
+async def jzl_asset_full(request):
+    """图片资产原图：返回原图 PNG（无损，用于弹窗查看大图；超长边 4096 防内存爆）。"""
+    path = (request.query.get("path") or "").strip()
+    if not path:
+        return web.json_response({"error": "缺少 path"}, status=400)
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
+        return web.json_response({"error": "仅支持图片"}, status=400)
+    if not os.path.isfile(path):
+        return web.json_response({"error": "文件不存在"}, status=404)
+    try:
+        from PIL import Image, ImageOps
+        import io
+        img = Image.open(path)
+        img = ImageOps.exif_transpose(img)
+        img = img.convert("RGB")
+        if max(img.size) > 4096:
+            img.thumbnail((4096, 4096), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return web.Response(body=buf.getvalue(), content_type="image/png")
+    except Exception as exc:
+        return web.json_response({"error": f"原图加载失败：{exc}"}, status=500)
+
+
+@PromptServer.instance.routes.get("/jzl/audio_preview")
+async def jzl_audio_preview(request):
+    """音频资产试听：返回音频文件本体（支持 Range 请求，供 <audio> 播放/拖动）。"""
+    path = (request.query.get("path") or "").strip()
+    if not path:
+        return web.json_response({"error": "缺少 path"}, status=400)
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus", ".wma"}:
+        return web.json_response({"error": "仅支持音频预览"}, status=400)
+    if not os.path.isfile(path):
+        return web.json_response({"error": "文件不存在"}, status=404)
+    try:
+        return web.FileResponse(path)
+    except Exception as exc:
+        return web.json_response({"error": f"音频读取失败：{exc}"}, status=500)
+
+
 @PromptServer.instance.routes.get("/jzl/manager")
 async def jzl_manager_get(request):
     """读取短剧管理器统一配置 + MiniMax-H3 模型列表 + 本地 LLM 模型列表"""
@@ -227,6 +270,7 @@ async def jzl_manager_get(request):
         import folder_paths
         from .llama_backend import chat_handlers as _ch
         from .nodes_asset_manager import _list_models
+        from .presets.script import STORY_STYLES as _story_styles
         all_llms = folder_paths.get_filename_list("LLM")
         llm_list = [f for f in all_llms if "mmproj" not in f.lower()]
         mmproj_list = ["None"] + [f for f in all_llms if "mmproj" in f.lower()]
@@ -234,9 +278,11 @@ async def jzl_manager_get(request):
         clip_models = _list_models("clip")
         vae_models = _list_models("vae")
         lora_models = _list_models("loras")
+        story_styles = list(_story_styles.keys())
     except Exception:
         llm_list, mmproj_list, _ch = [], ["None"], ["None"]
         diff_models = clip_models = vae_models = lora_models = []
+        story_styles = []
     return web.json_response({
         "ok": True,
         "settings": _read_manager_settings(),
@@ -247,6 +293,7 @@ async def jzl_manager_get(request):
         "clip_models": clip_models,
         "vae_models": vae_models,
         "lora_models": lora_models,
+        "story_styles": story_styles,
     })
 
 

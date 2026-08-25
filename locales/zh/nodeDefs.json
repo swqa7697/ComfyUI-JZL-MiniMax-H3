@@ -215,14 +215,21 @@
   "JZL_MiniMaxAssetManager": {
     "display_name": "MiniMax-H3生成管理器",
     "inputs": {
-      "mode": { "name": "生成模式切换" },
+      "aspect_ratio": { "name": "画幅比例" },
+      "megapixels": { "name": "百万像素 MP" },
+      "display_info": { "name": "分辨率 / 帧数" },
+      "duration": { "name": "时长(秒)" },
+      "scale_factor": { "name": "参考图放大" },
+      "upscale_scale": { "name": "二采放大倍数" },
       "video_count": { "name": "生成视频数量" },
-      "prompt_input": { "name": "提示词输入" }
+      "model": { "name": "主模型" },
+      "clip": { "name": "CLIP" },
+      "vae": { "name": "视觉VAE" },
+      "audio_vae": { "name": "音频VAE" },
+      "prompt_input": { "name": "📝 提示词" }
     },
     "outputs": {
-      "0": { "name": "📋 资产清单" },
-      "1": { "name": "生成视频数量" },
-      "2": { "name": "提示词" }
+      "0": { "name": "📦 视频保存总线" }
     }
   },
   "JZL_MiniMaxH3Ref2vaBusOut": {

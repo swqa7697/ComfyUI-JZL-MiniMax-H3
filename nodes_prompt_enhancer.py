@@ -187,7 +187,7 @@ class JZL_MiniMaxPromptEnhancer:
         )
 
     @classmethod
-    def _enhance_block(cls, block, system_prompt, bus, lang, force_offload, seed):
+    def _enhance_block(cls, block, system_prompt, bus, lang, seed):
         """润色单块的 detailed_description，返回新块；失败返回 None（调用方保留原块）。"""
         h3_m = re.search(r'(===H3_PROMPT===\n)(.*?)(?====|\Z)', block, re.DOTALL)
         if not h3_m:
@@ -211,7 +211,7 @@ class JZL_MiniMaxPromptEnhancer:
         info = cls._extract_segment_info(block)
         user_msg = cls._build_user_msg(lang, info, subject_defs, dispatch, original_dd)
 
-        new_dd = cls._run_llm(bus, system_prompt, user_msg, force_offload, seed)
+        new_dd = cls._run_llm(bus, system_prompt, user_msg, False, seed)
         new_dd = (new_dd or "").strip()
         if not new_dd or new_dd.startswith(("[API", "[LLM", "[错误", "[读取")):
             return None  # LLM 失败，保留原块
@@ -250,7 +250,7 @@ class JZL_MiniMaxPromptEnhancer:
         enhanced_blocks = []
         failed = 0
         for idx, block in enumerate(blocks, 1):
-            new_block = self._enhance_block(block, system_prompt, bus, lang, force_offload, seed)
+            new_block = self._enhance_block(block, system_prompt, bus, lang, seed)
             if new_block is None:
                 failed += 1
                 enhanced_blocks.append(block)
@@ -258,6 +258,13 @@ class JZL_MiniMaxPromptEnhancer:
                 enhanced_blocks.append(new_block)
             seg_label = self._CN_NUMS[idx - 1] if idx <= len(self._CN_NUMS) else str(idx)
             print(f"[JZL-增强] 第{seg_label}段完成...")
+
+        # 全部增强完成后，按需卸载本地模型（避免每段重复加载/卸载）
+        if force_offload:
+            try:
+                LLAMA_CPP_STORAGE.clean()
+            except Exception:
+                pass
 
         # 统计表（前缀）原样保留 + 增强后的分段块
         parts = [prefix] if prefix else []
