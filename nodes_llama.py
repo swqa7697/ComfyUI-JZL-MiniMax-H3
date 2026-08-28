@@ -60,6 +60,33 @@ def _find_latest_version(base_dir):
     return os.path.join(base_dir, "第001次分段词"), 1
 
 
+def _next_generation_dir(story_name=""):
+    """output/jzl/{故事名}/ 下新建「第NNNNN次生成」批次目录（5位编号递增），返回路径。
+
+    每次工作流运行（拆解/增强）归入一个新批次；H3提示词 / 故事拆解 / 已增强剧本
+    三个同级子目录都在批次内，方便按批次统一查看。"""
+    try:
+        base = folder_paths.get_output_directory()
+    except Exception:
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "..", "output")
+    safe_name = re.sub(r'[<>:"/\\|?*\s]', '_', (story_name or "untitled").strip())
+    root = os.path.join(base, "jzl", safe_name)
+    os.makedirs(root, exist_ok=True)
+    pat = re.compile(r'^第(\d{5})次生成$')
+    nums = []
+    try:
+        for f in os.listdir(root):
+            m = pat.match(f)
+            if m and os.path.isdir(os.path.join(root, f)):
+                nums.append(int(m.group(1)))
+    except OSError:
+        pass
+    nxt = (max(nums) + 1) if nums else 1
+    gen_dir = os.path.join(root, f"第{nxt:05d}次生成")
+    os.makedirs(gen_dir, exist_ok=True)
+    return gen_dir
+
+
 def _api_settings_file():
     """API 设置持久化文件路径（存 ComfyUI user 目录，API Key 不明文进工作流）"""
     try:
@@ -852,8 +879,8 @@ class JZL_MiniMax_ScriptProcessor:
                 segment_count, segment_duration, prompt_lang, ref_image_intro, ref_video_intro, ref_audio_intro,
                 enable_scene, enable_props, enable_video, enable_audio,
                 seed, force_offload, save_states,
-                llm_backend="local", llama_model=None, parameters=None, api_config=None, preference=None, custom_rule_path=None):
-        from .presets.script import build_shot_prompt, SEGMENT_COUNT_OPTIONS
+                llm_backend="local", llama_model=None, parameters=None, api_config=None, preference=None, custom_rule_path=None, gen_dir=None):
+        from .presets.script import build_shot_prompt, SEGMENT_COUNT_OPTIONS, _resolve_segment_count
 
         if not story_input or not story_input.strip():
             return ("[错误] 请输入故事内容", {})
@@ -871,7 +898,7 @@ class JZL_MiniMax_ScriptProcessor:
             preference=(preference or "").strip(),
             custom_rules=custom_rules,
         )
-        segment_count = SEGMENT_COUNT_OPTIONS.get(segment_count, 4)
+        segment_count = _resolve_segment_count(segment_count)
         user_msg = f"请生成恰好 {segment_count} 个分段，每段视频固定 {segment_duration} 秒，输出 [SHOT_START]...[SHOT_END] 完整块（分段信息 + 六段提示词 + 调度指令）。"
 
         if "api" in str(llm_backend) and api_config:
@@ -907,10 +934,10 @@ class JZL_MiniMax_ScriptProcessor:
         slot_warnings = []
         _, _slot_name_map = self._build_slot_map(ref_image_intro, ref_video_intro, ref_audio_intro)
         if shots:
-            base_dir = _get_output_dir(story_name, "H3提示词")
-            _, next_ver = _find_latest_version(base_dir)
-            ver_dir = os.path.join(base_dir, f"第{next_ver:03d}次分段词")
-            os.makedirs(ver_dir, exist_ok=True)
+            if gen_dir is None:
+                gen_dir = _next_generation_dir(story_name)
+            h3_dir = os.path.join(gen_dir, "H3提示词")
+            os.makedirs(h3_dir, exist_ok=True)
             for i, shot in enumerate(shots):
                 shot_num = i + 1
                 h3_text, scene_info, video_info, audio_info = self._parse_four_in_one(shot)
@@ -946,7 +973,7 @@ class JZL_MiniMax_ScriptProcessor:
                 cleaned_shots.append(self._clean_shot_text(shot, has_dialogue, enable_scene, enable_props, enable_video, enable_audio))
 
                 ts = datetime.now().strftime("%Y%m%d%H%M%S")
-                txt_path = os.path.join(ver_dir, f"{shot_num:03d}分段_{ts}.txt")
+                txt_path = os.path.join(h3_dir, f"{shot_num:03d}分段_{ts}.txt")
                 with open(txt_path, "w", encoding="utf-8") as f:
                     f.write(f"===H3_PROMPT===\n{h3_text}\n")
                     f.write(f"===SCENE_INSTRUCTION===\n{scene_info}\n")
@@ -988,9 +1015,13 @@ class JZL_MiniMax_ScriptProcessor:
         else:
             script_output = result
 
-        # 保存剧本（含统计表）
+        # 保存剧本（含统计表）→ output/jzl/{故事名}/第NNNNN次生成/故事拆解/
+        if gen_dir is None:
+            gen_dir = _next_generation_dir(story_name)
+        story_dir = os.path.join(gen_dir, "故事拆解")
+        os.makedirs(story_dir, exist_ok=True)
         prefix = "生成故事拆解" if "生成" in mode else "原始故事拆解"
-        with open(_safe_path(_get_output_dir(story_name, "故事拆解"), prefix), "w", encoding="utf-8") as f:
+        with open(_safe_path(story_dir, prefix), "w", encoding="utf-8") as f:
             f.write(script_output)
 
         # BUS 输出：把模型/API/偏好/风格等参数打包，供「提示词增强」节点独立运行 LLM

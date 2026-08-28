@@ -16,7 +16,7 @@ import { api } from "../../scripts/api.js";
 
 const NODE_TYPE = "JZL_MiniMaxAssetManager";
 const MANAGER_ENDPOINT = "/jzl/manager";
-const CHOOSE_ENDPOINT = "/jzl/choose_asset_file";
+const UPLOAD_ENDPOINT = "/jzl/upload_asset";
 const ASSET_PREVIEW_ENDPOINT = "/jzl/asset_preview";
 const AUDIO_PREVIEW_ENDPOINT = "/jzl/audio_preview";
 
@@ -73,11 +73,19 @@ const OPTIONS = {
     aspectShort: ["16:9", "9:16", "4:3", "3:4", "1:1", "21:9", "4:5", "5:4"],
     cuts: ["不指定 / Unspecified", "不切镜 / Single Shot", "1 次切镜 / 1 Cut", "2 次切镜 / 2 Cuts", "3 次切镜 / 3 Cuts", "4 次切镜 / 4 Cuts", "5 次切镜 / 5 Cuts", "6 次切镜 / 6 Cuts", "7 次切镜 / 7 Cuts", "8 次切镜 / 8 Cuts", "9 次切镜 / 9 Cuts"],
     inferenceModes: ["one by one", "images", "video"],
-    samplers: ["res_multistep", "euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde", "dpmpp_sde", "ddim", "uni_pc", "lcm", "gradient_estimation"],
-    schedulers: ["simple", "normal", "karras", "exponential", "sgm_uniform", "beta", "ddim_uniform"],
+    samplers: ["res_multistep", "res_multistep_cfg_pp", "res_multistep_ancestral", "res_multistep_ancestral_cfg_pp",
+        "euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp",
+        "heun", "heunpp2", "exp_heun_2_x0", "exp_heun_2_x0_sde",
+        "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast", "dpm_adaptive",
+        "dpmpp_2s_ancestral", "dpmpp_2s_ancestral_cfg_pp", "dpmpp_sde", "dpmpp_sde_gpu",
+        "dpmpp_2m", "dpmpp_2m_cfg_pp", "dpmpp_2m_sde", "dpmpp_2m_sde_gpu",
+        "dpmpp_2m_sde_heun", "dpmpp_2m_sde_heun_gpu", "dpmpp_3m_sde", "dpmpp_3m_sde_gpu",
+        "ddpm", "lcm", "ipndm", "ipndm_v", "deis",
+        "gradient_estimation", "gradient_estimation_cfg_pp", "er_sde", "seeds_2", "seeds_3",
+        "sa_solver", "sa_solver_pece", "ddim", "uni_pc", "uni_pc_bh2"],
+    schedulers: ["simple", "sgm_uniform", "karras", "exponential", "ddim_uniform", "beta", "normal", "linear_quadratic", "kl_optimal"],
     seedModes: ["randomize", "fixed", "increment"],
-    decodeVideo: ["XB-BOX - VAE解码（原版优化）", "VAE解码"],
-    decodeAudio: ["VAE解码（音频）"],
+    decodeCleanup: ["卸载显存模型", "不做清理"],
 };
 
 const PANELS = {
@@ -86,7 +94,9 @@ const PANELS = {
     preference: { label: "🎭 采样解码设置" },
     preference_settings: { label: "🎯 镜头参数预设" },
     prompt_elements: { label: "➕ 常用提示词元素" },
-    coming_soon: { label: "🚧 敬请期待..." },
+    align: { label: "🎯 参考元素切换" },
+    save_settings: { label: "💾 视频保存设置" },
+    help: { label: "📖 节点使用说明" },
 };
 
 // 节点表面按钮定义（前端 addWidget 添加）
@@ -94,9 +104,11 @@ const PANEL_BUTTONS = [
     { widget: "btn_assets", label: "📁 参考素材管理", panel: "assets" },
     { widget: "btn_prompt", label: "📝 剧本拆解配置", panel: "prompt" },
     { widget: "btn_pref", label: "🎭 采样解码设置", panel: "preference" },
-    { widget: "btn_preference", label: "🎯 镜头参数预设", panel: "preference_settings" },
+    { widget: "btn_save", label: "💾 视频保存设置", panel: "save_settings" },
     { widget: "btn_elements", label: "➕ 常用提示词元素", panel: "prompt_elements" },
-    { widget: "btn_coming", label: "🚧 敬请期待...", panel: "coming_soon" },
+    { widget: "btn_preference", label: "🎯 镜头参数预设", panel: "preference_settings" },
+    { widget: "btn_align", label: "🎯 参考元素切换", panel: "align" },
+    { widget: "btn_help", label: "📖 节点使用说明", panel: "help" },
 ];
 
 const KIND_LABEL = { image: "图片", video: "视频", audio: "音频" };
@@ -155,7 +167,7 @@ function assetColor(item) {
 
 // contenteditable 光标辅助
 function caretOffset(editable) {
-    // 与 getPromptText 一致的全名视图偏移：token 按 dataset.jzlAsset（全名）计长，
+    // 与 getPromptText 一致：token 按 dataset.jzlName（资产名）计长，
     // 避免「显示简称/底层全名」两种视图不一致导致 @ 检测定位错误
     const sel = window.getSelection();
     if (!sel || !sel.rangeCount || !editable.contains(sel.anchorNode)) return getPromptText(editable).length;
@@ -176,7 +188,7 @@ function getPromptText(editable) {
                 out += child.textContent;
             } else if (child.nodeType === 1) {
                 if (child.classList?.contains("jzl-asset-token")) {
-                    out += child.dataset.jzlAsset || "";
+                    out += child.dataset.jzlName || child.dataset.jzlAsset || "";
                 } else if (child.tagName === "BR") {
                     out += "\n";
                 } else if (child.tagName === "DIV" || child.tagName === "P") {
@@ -190,6 +202,7 @@ function getPromptText(editable) {
     visit(editable);
     return out;
 }
+
 function insertSpanAtCaret(editable, span) {
     const sel = window.getSelection();
     if (sel && sel.rangeCount && editable.contains(sel.anchorNode)) {
@@ -210,8 +223,7 @@ function insertSpanAtCaret(editable, span) {
     }
 }
 function setCaretToOffset(editable, offset) {
-    // 与 caretOffset/getPromptText 保持一致的「全名视图」偏移：
-    // 资产 token 整体按 dataset.jzlAsset（全名）长度计，而非内部简称文本长度。
+    // 与 caretOffset/getPromptText 保持一致：资产 token 整体按 dataset.jzlName（资产名）长度计。
     // 否则光标定位会错位 → 点击资产窗插入跑到错误位置。
     const sel = window.getSelection();
     const range = document.createRange();
@@ -231,7 +243,7 @@ function setCaretToOffset(editable, offset) {
                 remaining -= len;
             } else if (child.nodeType === 1) {
                 if (child.classList && child.classList.contains("jzl-asset-token")) {
-                    const len = (child.dataset.jzlAsset || "").length;
+                    const len = (child.dataset.jzlName || child.dataset.jzlAsset || "").length;
                     if (remaining <= len) {
                         range.setStartAfter(child);
                         range.collapse(true);
@@ -286,23 +298,58 @@ function cacheAssets(node, settings) {
     if (node) node.__jzlAssets = (settings?.assets) || { images: [], videos: [], audios: [] };
 }
 
+// 槽位（类型+字母）分配：与后端 _build_asset_intro 完全一致
+// 手选字母（A-Z）优先；缺失/非法按类型自动从 A 起顺延；同类同字母冲突顺延下一字母
+function buildSlotMap(assets) {
+    const map = {};
+    const counters = {};
+    const used = {};
+    const kinds = [["image", "images"], ["video", "videos"], ["audio", "audios"]];
+    for (const [kind, key] of kinds) {
+        (assets?.[key] || []).forEach((item, i) => {
+            if (item?.enabled === false) return;
+            const name = (item?.name || "").trim();
+            if (!name) return;
+            const st = slotTypeOf(kind, item?.type || "");
+            if (!st) return;
+            let letter = (item?.letter || "").trim().toUpperCase();
+            if (!/^[A-Z]$/.test(letter)) letter = String.fromCharCode(65 + (counters[st] || 0));
+            let slot = st + letter;
+            while (used[slot] && letter < "Z") {
+                letter = String.fromCharCode(letter.charCodeAt(0) + 1);
+                slot = st + letter;
+            }
+            used[slot] = true;
+            counters[st] = (counters[st] || 0) + 1;
+            map[`${kind}:${i}`] = slot;
+        });
+    }
+    return map;
+}
+
 function collectMentionItems(node) {
     const kindMap = { images: "image", videos: "video", audios: "audio" };
     const cache = node?.__jzlAssets || { images: [], videos: [], audios: [] };
+    const slotMap = buildSlotMap(cache);
     const items = [];
     for (const kindKey of ["images", "videos", "audios"]) {
         const kind = kindMap[kindKey];
         let displayIndex = 0;  // 显示连续编号（跳过空槽位，避免跳号：音频1、音频3）
-        (cache[kindKey] || []).forEach((item) => {
+        (cache[kindKey] || []).forEach((item, idx) => {
             if (item?.enabled === false) return;
             if (!(item?.path || "").trim()) return;  // 空槽口（未上传素材）不显示在主界面
             const name = assetFullName(kind, displayIndex, item);  // 全名（图片1 角色 碗碗）
             displayIndex++;
             if (!name) return;
+            const cleanName = (item?.name || "").trim();  // 资产自定义名（严格匹配用，一字不差）
+            const slot = slotMap[`${kind}:${idx}`] || "";
             items.push({
                 name,                    // 全名（带空格）→ 后端匹配用
                 token: name.replace(/\s+/g, ""),  // 去空格全名（后端提取用）
-                display: (item?.name || "").trim() || name.replace(/\s+/g, ""),  // 简称（输入框显示）
+                display: cleanName || name.replace(/\s+/g, ""),  // 简称（输入框显示）
+                matchName: cleanName,     // 严格匹配名：提示词里精确出现该名字 → 着色/对齐（第3/5点）
+                slot,                     // 槽位（类型+字母，如「角色A」，与后端 _build_asset_intro 一致）
+                slotLabel: (slot ? slot + cleanName : (cleanName || name.replace(/\s+/g, ""))),  // 显示文本（角色A兔子）
                 kind, type: item?.type || "", path: item?.path || "",
                 description: item?.description || "",  // 详细描述（hover 用）
             });
@@ -374,7 +421,7 @@ function openMentionMenu(editable, start, end, query, node) {
 
         const label = document.createElement("span");
         label.style.cssText = "font-size:11px;color:#ddd;line-height:1.2;max-width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;";
-        label.textContent = item.name;
+        label.textContent = item.slotLabel || item.name;
 
         cell.append(thumb, typeTag, label);
         cell.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); });
@@ -407,29 +454,29 @@ function chooseMention(item) {
     sRange.deleteContents();
     const span = makeAssetToken(token, item);
     sRange.insertNode(span);
-    const space = document.createTextNode(" ");
-    const afterRange = document.createRange();
-    afterRange.setStartAfter(span);
-    afterRange.collapse(true);
-    afterRange.insertNode(space);
     const caretRange = document.createRange();
-    caretRange.setStartAfter(space);
+    caretRange.setStartAfter(span);
     caretRange.collapse(true);
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(caretRange);
-    promptCaretPos = start + token.length + 1;
+    const nameLen = (item.matchName || item.display || token).length;
+    promptCaretPos = start + nameLen;
     editable.dispatchEvent(new Event("input", { bubbles: true }));
     editable.dispatchEvent(new Event("change"));
+    // @ 添加素材 → 自动激活「显示引用」并保存
+    const _n = editable.__node;
+    if (_n) { _n.__jzlAlignMode = "ref"; _n.__updateAlignStatus?.(); saveAlignMode(_n, "ref"); }
 }
 
 function makeAssetToken(token, item) {
     const span = document.createElement("span");
-    span.dataset.jzlAsset = token;  // 全名（去空格），后端匹配用
+    span.dataset.jzlAsset = token;  // 全名（去空格），后端匹配用（旧工作流兼容）
+    span.dataset.jzlName = (item.matchName || item.display || item.name || "").trim();  // 资产名 → 纯文本输出（清洗类型+编号）
     span.dataset.jzlKind = item.kind || "";
     span.contentEditable = "false";
     span.className = "jzl-asset-token";
-    span.title = item.name || token;  // hover 显示全名
+    span.title = item.slot ? `${item.slot} ${item.name || token}` : (item.name || token);  // hover 显示槽位+全名
     // 图片：内嵌缩略图；视频/音频：CSS 伪元素图标（不占用文本）
     if (item.kind === "image") {
         const img = document.createElement("img");
@@ -439,7 +486,7 @@ function makeAssetToken(token, item) {
         span.appendChild(img);
     }
     const text = document.createElement("span");
-    text.textContent = item.display || token;  // 输入框显示简称（如「碗碗」）
+    text.textContent = item.slotLabel || item.display || token;  // 显示：类型+字母+名称（如「角色A兔子」）
     text.style.color = assetColor(item);
     span.appendChild(text);
     return span;
@@ -457,23 +504,91 @@ function findAssetByToken(token, node) {
 }
 
 function renderPromptFromText(promptBox, text, node) {
-    // 把纯文本里的 @资产名 重新渲染成「缩略图 + 彩色文字」锁死 token（刷新恢复着色/缩略图）
+    // 把纯文本里的「资产名」重新渲染成「缩略图 + 彩色文字」锁死 token：
+    // 1) 严格一字不差匹配资产自定义名（最长优先，避免部分重叠）
+    // 2) 旧工作流遗留的 图片N… 全名 token 兜底（自动迁移为纯文本）
     promptBox.innerHTML = "";
     const source = text || "";
-    const re = /(?:图片|视频|音频)\d+[^\s@，。；,.、]*/g;
+    const items = collectMentionItems(node)
+        .filter((it) => (it.matchName || "").length)
+        .sort((a, b) => b.matchName.length - a.matchName.length);
+    const legacyRe = /(?:图片|视频|音频)\d+[^\s@，。；,.、]*/g;
     let last = 0;
-    for (const m of source.matchAll(re)) {
-        if (m.index > last) promptBox.appendChild(document.createTextNode(source.slice(last, m.index)));
-        const token = m[0];
-        const item = findAssetByToken(token, node);
-        if (item) {
-            promptBox.appendChild(makeAssetToken(token, item));
-        } else {
-            promptBox.appendChild(document.createTextNode(token));
+    let i = 0;
+    while (i < source.length) {
+        // 1) 严格资产名匹配（一字不差）
+        let hit = null;
+        for (const it of items) {
+            if (source.startsWith(it.matchName, i)) { hit = it; break; }
         }
-        last = m.index + m[0].length;
+        if (hit) {
+            if (i > last) promptBox.appendChild(document.createTextNode(source.slice(last, i)));
+            promptBox.appendChild(makeAssetToken(hit.token, hit));
+            i += hit.matchName.length;
+            last = i;
+            continue;
+        }
+        // 2) 旧工作流遗留全名 token（图片N 类型 名称）
+        legacyRe.lastIndex = i;
+        const m = legacyRe.exec(source);
+        if (m && m.index === i) {
+            if (i > last) promptBox.appendChild(document.createTextNode(source.slice(last, i)));
+            const item = findAssetByToken(m[0], node);
+            if (item) {
+                promptBox.appendChild(makeAssetToken(m[0], item));
+            } else {
+                promptBox.appendChild(document.createTextNode(m[0]));
+            }
+            i += m[0].length;
+            last = i;
+            continue;
+        }
+        i++;
     }
     if (last < source.length) promptBox.appendChild(document.createTextNode(source.slice(last)));
+}
+
+// 参考元素切换（双向）：正向=纯文本按素材名一字不差对齐成 @token；逆向=已有 @token 时清洗成纯文本（只保留名称）
+function toggleAlignPrompt(node) {
+    const box = node?.__promptBox;
+    if (!box) return;
+    const ip = (node.widgets || []).find((w) => w.name === "internal_prompt");
+    // 切换方向由当前模式（__jzlAlignMode）决定，而不是由「有无 @token」决定：
+    // 空文本/无素材时也始终能双向切换（避免空框永远无 token → 卡在正向切不回纯文本）
+    if (node.__jzlAlignMode === "text") {
+        // 正向：纯文本 → 按素材名一字不差对齐成 @token
+        renderPromptFromText(box, getPromptText(box), node);
+        if (ip) setWidgetValue(ip, getPromptText(box));
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+        node.setDirtyCanvas?.(true, true);
+        node.__jzlAlignMode = "ref";
+        node.__updateAlignStatus?.();
+        saveAlignMode(node, "ref");
+        notify("✅ 已切换为显示引用（按素材名一字不差着色）", "success");
+    } else {
+        // 逆向：@素材 → 纯文本（getPromptText 只输出名称，自动清洗类型+编号）
+        const text = getPromptText(box);
+        box.innerHTML = "";
+        box.appendChild(document.createTextNode(text));
+        if (ip) setWidgetValue(ip, text);
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+        node.setDirtyCanvas?.(true, true);
+        node.__jzlAlignMode = "text";
+        node.__updateAlignStatus?.();
+        saveAlignMode(node, "text");
+        notify("✅ 已切换为纯文本（只保留素材名称）", "success");
+    }
+}
+
+function saveAlignMode(node, mode) {
+    // 把「参考元素切换」状态写入 manager_settings（随工作流保存，刷新不丢失）
+    const msW = (node?.widgets || []).find((w) => w.name === "manager_settings");
+    if (!msW) return;
+    const raw = readWidgetValue(msW);
+    let s = {};
+    try { s = raw ? JSON.parse(raw) : {}; } catch (_) {}
+    s.align_mode = mode;
+    setWidgetValue(msW, JSON.stringify(s));
 }
 
 function insertAssetToken(editable, item) {
@@ -481,25 +596,24 @@ function insertAssetToken(editable, item) {
     if (!editable) return;
     const token = item.token;  // 去空格全名（后端匹配用）
     const span = makeAssetToken(token, item);
-    const space = document.createTextNode(" ");
     editable.focus();
     // 用记忆的光标位置插入（点击资产窗时实时 selection 会丢失，导致 token 跑到开头）
     const offset = (typeof promptCaretPos === "number") ? promptCaretPos : getPromptText(editable).length;
     const range = setCaretToOffset(editable, offset);
     range.insertNode(span);
-    const afterRange = document.createRange();
-    afterRange.setStartAfter(span);
-    afterRange.collapse(true);
-    afterRange.insertNode(space);
     const caretRange = document.createRange();
-    caretRange.setStartAfter(space);
+    caretRange.setStartAfter(span);
     caretRange.collapse(true);
     const sel = window.getSelection();
     sel.removeAllRanges();
     sel.addRange(caretRange);
-    promptCaretPos = offset + token.length + 1;
+    const nameLen = (item.matchName || item.display || token).length;
+    promptCaretPos = offset + nameLen;
     editable.dispatchEvent(new Event("input", { bubbles: true }));
     editable.dispatchEvent(new Event("change"));
+    // 点击添加素材 → 自动激活「显示引用」并保存
+    const _n = editable.__node;
+    if (_n) { _n.__jzlAlignMode = "ref"; _n.__updateAlignStatus?.(); saveAlignMode(_n, "ref"); }
 }
 
 function renderAssetWindow(windowBox, textarea, node) {
@@ -511,16 +625,16 @@ function renderAssetWindow(windowBox, textarea, node) {
         windowBox.__onResize?.();
         return;
     }
-    // 自动换行宫格：始终显示全部素材，多行时窗口与节点自动增高
+    // 自动换行宫格：始终显示全部素材，多行时窗口与节点自动增高（按节点宽度自动换行，不遮挡）
     const grid = document.createElement("div");
-    grid.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;padding:2px;align-content:flex-start;";
+    grid.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;padding:3px;align-content:flex-start;";
     for (const item of items) {
         const cell = document.createElement("div");
-        cell.style.cssText = "flex:0 0 52px;width:52px;cursor:pointer;border-radius:4px;overflow:hidden;border:1px solid #333;background:#111;";
+        cell.style.cssText = "flex:0 0 78px;width:78px;cursor:pointer;border-radius:6px;overflow:hidden;border:1px solid #333;background:#111;";
         cell.title = [item.name, item.description].filter(Boolean).join("\n");  // hover 显示完整内容
         // 缩略图（图片）或图标（视频/音频）
         const thumb = document.createElement("div");
-        thumb.style.cssText = "width:52px;height:34px;display:flex;align-items:center;justify-content:center;overflow:hidden;font-size:16px;background:#000;";
+        thumb.style.cssText = "width:78px;height:52px;display:flex;align-items:center;justify-content:center;overflow:hidden;font-size:24px;background:#000;";
         if (item.kind === "image") {
             const img = document.createElement("img");
             img.style.cssText = "width:100%;height:100%;object-fit:cover;";
@@ -530,18 +644,19 @@ function renderAssetWindow(windowBox, textarea, node) {
         } else {
             thumb.textContent = item.kind === "video" ? "🎬" : "🎧";
         }
-        // 名称标签（类型 + 自定义名）
+        // 名称标签（类型 + 自定义名）——字号 11px 可显示约 7 个字（如「角色A小白兔」），超长省略号
         const label = document.createElement("div");
-        label.style.cssText = "width:100%;height:16px;line-height:16px;font-size:9px;color:#cdd8e2;background:rgba(10,20,30,.7);text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 2px;box-sizing:border-box;";
-        label.textContent = ([item.type, item.display].filter(Boolean).join("")) || item.display || "";
+        label.style.cssText = "width:100%;height:22px;line-height:22px;font-size:11px;color:#cdd8e2;background:rgba(10,20,30,.7);text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 3px;box-sizing:border-box;";
+        label.textContent = item.slotLabel || item.display || "";
         cell.append(thumb, label);
         cell.addEventListener("mousedown", (e) => e.stopPropagation());
         cell.addEventListener("click", () => insertAssetToken(textarea, item));
         grid.appendChild(cell);
     }
     windowBox.appendChild(grid);
-    // 高度自适应内容（多行换行时增高），并通知节点调整整体高度
-    const h = Math.max(grid.offsetHeight, 30);
+    // 高度自适应内容（多行换行时增高），并通知节点调整整体高度；
+    // 用 scrollHeight 取完整内容高度（含 overflow:hidden 可能遮挡的多行），保证素材不被吞
+    const h = Math.max(grid.scrollHeight || grid.offsetHeight, 30);
     windowBox.style.height = h + "px";
     windowBox.__onResize?.();
 }
@@ -567,39 +682,68 @@ async function loadLists() {
             vae_models: data?.vae_models || [],
             lora_models: data?.lora_models || [],
             story_styles: data?.story_styles || [],
+            save_dir: data?.save_dir || "",
+            upscaler_models: data?.upscaler_models || [],
         };
     } catch (_) {
-        return { llm_models: [], mmproj_models: ["None"], chat_handlers: ["None"], story_styles: [] };
+        return { llm_models: [], mmproj_models: ["None"], chat_handlers: ["None"], story_styles: [], save_dir: "", upscaler_models: [] };
     }
 }
 
 async function loadManager(node) {
-    // 节点独立配置：优先读工作流内保存的 manager_settings；空则全新默认（不继承其他节点/全局）
+    // 节点独立配置：优先读工作流内保存的 manager_settings；空则全新默认（不继承其他节点/全局）。
+    // 先 await loadLists 再读 widget：configure 在 onNodeCreated 之后才恢复 manager_settings 值，
+    // 若在 await 前读取会拿到空值 → 刷新后资产窗/提示词着色丢失（第4点修复）。
+    const lists = await loadLists();
     const w = node?.widgets?.find((x) => x.name === "manager_settings");
     const raw = w ? readWidgetValue(w) : "";
     let settings = null;
     if (raw && typeof raw === "string" && raw.trim()) {
         try { const s = JSON.parse(raw); if (s && typeof s === "object") settings = s; } catch (_) {}
     }
-    const lists = await loadLists();
     return { settings: settings || defaultSettings(), ...lists };
 }
 
 async function saveManager(node, value) {
     const w = node?.widgets?.find((x) => x.name === "manager_settings");
     if (w) setWidgetValue(w, JSON.stringify(value));
+    try { node?.__jzlUpdateInfo?.(); } catch (_) {}  // 保存后实时同步节点「实时显示」
     return value;
 }
 
 async function chooseFile(kind) {
-    const resp = await api.fetchApi(CHOOSE_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind }),
+    // 浏览器原生文件选择 + multipart 上传到后端（与官方「加载图像」一致）。
+    // 云机/无桌面环境也完全可用：文件从用户浏览器直传服务器，不依赖 tkinter 弹窗。
+    const accept = { image: "image/*", video: "video/*", audio: "audio/*" }[kind] || "";
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = accept;
+    input.style.display = "none";
+    const done = (p) => { if (input.parentNode) input.parentNode.removeChild(input); return p; };
+    const chosen = new Promise((resolve) => {
+        input.addEventListener("change", async () => {
+            const file = input.files && input.files[0];
+            if (!file) { resolve(null); return; }
+            const fd = new FormData();
+            fd.append("file", file);
+            fd.append("kind", kind);
+            try {
+                const resp = await api.fetchApi(UPLOAD_ENDPOINT, { method: "POST", body: fd });
+                const data = await resp.json().catch(() => ({}));
+                if (data?.path) { resolve(data.path); return; }
+                notify(data?.error || "上传失败", "error");
+                resolve(null);
+            } catch (_) {
+                notify("上传失败", "error");
+                resolve(null);
+            }
+        });
+        // 用户在文件对话框点「取消」时正常结束并清理 input（现代浏览器均支持 cancel 事件）
+        input.addEventListener("cancel", () => resolve(null));
     });
-    const data = await resp.json().catch(() => ({}));
-    if (!data?.path) return null;
-    return data.path;
+    document.body.appendChild(input);
+    input.click();
+    return done(await chosen);
 }
 
 function el(tag, css, text) {
@@ -877,6 +1021,8 @@ function ensureManagerStyle() {
         ".jzl-asset-token .jzl-asset-thumb{display:inline-block;width:20px;height:20px;object-fit:cover;border-radius:3px;border:1px solid #555;vertical-align:middle;}",
         ".jzl-asset-token[data-jzl-kind='video']::before{content:'🎬';font-size:12px;}",
         ".jzl-asset-token[data-jzl-kind='audio']::before{content:'🎧';font-size:12px;}",
+        // 弹窗内勾选框统一 18px 橙色（素材库卡片用内联样式绿色覆盖，不受影响）
+        ".jzl-modal input[type='checkbox']{width:18px;height:18px;accent-color:#f59e0b;cursor:pointer;}",
     ].join("\n");
     document.head.append(st);
 }
@@ -984,41 +1130,10 @@ function getPromptTextarea(w) {
     return null;
 }
 
-function setupInternalPrompt(node, box, piWidget, ipWidget) {
-    // 外部提示词端口（prompt_input）：只保留接线小圆点，隐藏文本框控件（只读、不可手输）
-    const piTa = getPromptTextarea(piWidget);
-    if (piTa) {
-        piTa.readOnly = true;
-        piTa.title = "外部提示词端口：连线后替代节点内编辑";
-        piTa.style.display = "none";  // 隐藏文本框
-    }
-    if (piWidget) {
-        // 隐藏整个控件容器（含 label/包裹层），只保留左侧接线圆点
-        const el = piWidget.element;
-        if (el) {
-            try {
-                if (el.style) el.style.display = "none";
-                el.querySelectorAll?.("textarea, input, label").forEach((x) => { x.style.display = "none"; });
-            } catch (_) {}
-        }
-        // 压缩 widget 高度为一行（端口圆点所在），避免空白占位
-        piWidget.computeSize = () => [0, 24];
-        if (!piWidget.options) piWidget.options = {};
-        piWidget.options.serialize = false;
-        piWidget.options.hidden = false;  // 不隐藏 widget（否则圆点也没了）
-    }
-
+function setupInternalPrompt(node, box, ipWidget) {
+    // 提示词来源只有节点内编辑框（外部提示词端口已删除）：输入同步到 internal_prompt
     const syncInternal = () => {
         if (ipWidget) setWidgetValue(ipWidget, getPromptText(box));
-    };
-    const applyLock = (locked) => {
-        box.contentEditable = locked ? "false" : "true";
-        box.style.opacity = locked ? "0.45" : "1";
-        box.title = locked ? "已接入外部提示词，节点内编辑锁定" : "";
-    };
-    const checkLink = () => {
-        const inp = (node.inputs || []).find((i) => i.name === "prompt_input");
-        applyLock(!!(inp && inp.link != null));
     };
     box.addEventListener("input", () => {
         syncInternal();
@@ -1033,17 +1148,13 @@ function setupInternalPrompt(node, box, piWidget, ipWidget) {
     box.addEventListener("click", () => { promptCaretPos = caretOffset(box); });
     box.addEventListener("change", syncInternal);
     box.addEventListener("blur", () => setTimeout(closeMentionMenu, 150));
-    // 监听连线变化 → 锁定/解锁内部编辑（替代关系）
-    // 用 type/connected 参数直接判定（type=1=LiteGraph.INPUT），避免断开后 inp.link 未及时清空导致无法解锁
+    // internal_prompt 是内部存储字段：拒绝接线（幽灵防护）
     const origCC = node.onConnectionsChange;
     node.onConnectionsChange = function (type, index, connected, link_info) {
         const r = origCC?.apply(this, arguments);
         if (type === 1 && this.inputs && this.inputs[index]) {
             const inp = this.inputs[index];
-            if (inp.name === "prompt_input") {
-                applyLock(!!connected);
-            } else if (inp.name === "internal_prompt" && connected) {
-                // 拒绝：internal_prompt 是内部存储，禁止接线（幽灵防护）
+            if (inp.name === "internal_prompt" && connected) {
                 try {
                     const lid = link_info?.id != null ? link_info.id : (typeof link_info === "number" ? link_info : null);
                     inp.link = null;
@@ -1066,9 +1177,7 @@ function setupInternalPrompt(node, box, piWidget, ipWidget) {
         }
         return r;
     };
-    node.checkPromptLink = checkLink;
     syncInternal();
-    checkLink();
 }
 
 function caretCoords(ta) {
@@ -1131,7 +1240,7 @@ function openMentionMenuAtCaret(node, ta, start, end, query) {
         typeTag.textContent = item.type || KIND_LABEL[item.kind] || "";
         const label = document.createElement("span");
         label.style.cssText = "font-size:11px;color:#ddd;line-height:1.2;max-width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;";
-        label.textContent = item.name;
+        label.textContent = item.slotLabel || item.name;
         cell.append(thumb, typeTag, label);
         cell.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); });
         cell.addEventListener("click", () => chooseMentionText(ta, item));
@@ -1195,9 +1304,9 @@ function field(labelText, control) {
     // 原生感：无卡片背景，标签 + 控件对齐（对齐官方设置面板）
     const g = el("div", "display:flex;align-items:center;gap:12px;margin-bottom:10px;");
     const lab = el("label", "flex:0 0 160px;font-size:13px;color:var(--descrip-text,#999);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;", labelText);
-    control.style.flex = "1";
+    control.style.flex = "1 1 0";
     control.style.minWidth = "0";
-    // 复选框/开关是 label 包裹，不加输入框样式；真正的输入控件才有 .jzl-input
+    // 复选框/开关是 label 包裹，不加输入框样式；真正的输入控件才有 .jzl-input（等宽由 flex 保证）
     if (control.tagName === "INPUT" || control.tagName === "SELECT" || control.tagName === "TEXTAREA") {
         control.classList.add("jzl-input");
     }
@@ -1206,7 +1315,7 @@ function field(labelText, control) {
 }
 
 function selectControl(options, value, onChange) {
-    const s = el("select", "flex:1;min-width:0;");
+    const s = el("select", "flex:1 1 0;min-width:0;");
     s.className = "jzl-input";
     for (const o of options) {
         const op = el("option", "", o);
@@ -1218,7 +1327,7 @@ function selectControl(options, value, onChange) {
 }
 
 function textControl(value, placeholder, onChange) {
-    const i = el("input", "flex:1;min-width:0;");
+    const i = el("input", "flex:1 1 0;min-width:0;");
     i.className = "jzl-input";
     i.type = "text";
     i.value = value || "";
@@ -1227,8 +1336,19 @@ function textControl(value, placeholder, onChange) {
     return i;
 }
 
+function passwordControl(value, placeholder, onChange) {
+    // 密码型输入：明文不显示（API Key 等敏感字段）
+    const i = el("input", "flex:1 1 0;min-width:0;");
+    i.className = "jzl-input";
+    i.type = "password";
+    i.value = value || "";
+    if (placeholder) i.placeholder = placeholder;
+    i.addEventListener("change", () => onChange(i.value.trim()));
+    return i;
+}
+
 function numberControl(value, opts, onChange) {
-    const i = el("input", "flex:1;min-width:0;");
+    const i = el("input", "flex:1 1 0;min-width:0;");
     i.className = "jzl-input";
     i.type = "number";
     i.value = value;
@@ -1238,8 +1358,8 @@ function numberControl(value, opts, onChange) {
 }
 
 function checkboxControl(value, labelText, onChange) {
-    const w = el("label", "display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--fg-color,#ddd);");
-    const c = el("input", "accent-color:#2d5a88;");
+    const w = el("label", "display:flex;align-items:center;gap:10px;cursor:pointer;font-size:13px;color:var(--fg-color,#ddd);");
+    const c = el("input", "width:18px;height:18px;accent-color:#f59e0b;cursor:pointer;");
     c.type = "checkbox";
     c.checked = !!value;
     c.addEventListener("change", () => onChange(c.checked));
@@ -1247,29 +1367,29 @@ function checkboxControl(value, labelText, onChange) {
     return w;
 }
 
-// control_after_generate（生成后控制）：随机/固定/递增
-const SEED_CONTROL_KEYS = ["randomize", "fixed", "increment"];
-const SEED_CONTROL_LABEL = { randomize: "随机", fixed: "固定", increment: "递增" };
+// control_after_generate（生成后控制）：随机/固定/增加/减少
+const SEED_CONTROL_KEYS = ["randomize", "fixed", "increment", "decrement"];
+const SEED_CONTROL_LABEL = { randomize: "随机", fixed: "固定", increment: "增加", decrement: "减少" };
 
-function seedControlRow(p) {
-    // 原生感：标签 + 数字输入 + control_after_generate 按钮（点击循环 随机/固定/递增）
+function seedControlRow(p, fieldKey = "seed", modeKey = "seed_control", labelText = "种子") {
+    // 原生感：标签 + 数字输入 + control_after_generate 按钮（点击循环 随机/固定/增加/减少）
     const g = el("div", "display:flex;align-items:center;gap:12px;margin-bottom:10px;");
-    const lab = el("label", "flex:0 0 160px;font-size:13px;color:var(--descrip-text,#999);white-space:nowrap;", "种子");
+    const lab = el("label", "flex:0 0 160px;font-size:13px;color:var(--descrip-text,#999);white-space:nowrap;", labelText);
     const i = el("input", "flex:1;min-width:0;");
     i.type = "number";
-    i.value = p.seed ?? 0;
+    i.value = p[fieldKey] ?? 0;
     i.min = 0; i.max = 0xffffffffffffffff; i.step = 1;
     i.className = "jzl-input";
-    i.addEventListener("change", () => { p.seed = Math.round(parseFloat(i.value) || 0); });
-    const ctrl = el("button", "flex:0 0 auto;background:var(--comfy-input-bg,#2a2a2a);color:var(--fg-color,#ddd);border:1px solid var(--border-color,#555);border-radius:4px;padding:6px 10px;font-size:12px;cursor:pointer;white-space:nowrap;");
-    const curKey = () => (SEED_CONTROL_LABEL[p.seed_control] ? p.seed_control : "randomize");
+    i.addEventListener("change", () => { p[fieldKey] = Math.round(parseFloat(i.value) || 0); });
+    const ctrl = el("button", "flex:1 1 0;min-width:0;background:#b45309;color:#fff;border:1px solid #d97706;border-radius:4px;padding:6px 10px;font-size:12px;cursor:pointer;white-space:nowrap;text-align:center;");
+    const curKey = () => (SEED_CONTROL_LABEL[p[modeKey]] ? p[modeKey] : "randomize");
     const render = () => {
         ctrl.textContent = "🔁 " + SEED_CONTROL_LABEL[curKey()];
         ctrl.title = "生成后控制（control_after_generate）：随机=每次运行自动换新种子；固定=锁定当前值；递增=每次运行+1。点击切换";
     };
     ctrl.addEventListener("click", () => {
         const next = SEED_CONTROL_KEYS[(SEED_CONTROL_KEYS.indexOf(curKey()) + 1) % SEED_CONTROL_KEYS.length];
-        p.seed_control = next;
+        p[modeKey] = next;
         render();
         g.dispatchEvent(new Event("change", { bubbles: true }));  // 触发面板自动保存
     });
@@ -1281,6 +1401,7 @@ function seedControlRow(p) {
 function defaultSettings() {
     return {
         auto_save: true,
+        align_mode: "text",
         models: {
             fl2va: { model: "", loras: [] },
             ref2va: { model: "", loras: [] },
@@ -1304,7 +1425,7 @@ function defaultSettings() {
             },
             api: {
                 provider: "OpenAI 兼容 (OpenAI/DeepSeek/Qwen/GLM/Kimi/Ollama/vLLM/LM Studio)",
-                model: "", api_key: "", base_url: "",
+                model: "deepseek-v4-flash", api_key: "", base_url: "https://api.deepseek.com/v1",
                 temperature: 0.6, max_tokens: 8192, thinking: "disabled",
             },
             preference: {
@@ -1321,13 +1442,121 @@ function defaultSettings() {
         },
         sample_decode: {
             sampler: "res_multistep", scheduler: "simple", steps: 4, cfg: 1.0,
-            seed_mode: "randomize",
-            decode_video: "XB-BOX - VAE解码（原版优化）", decode_audio: "VAE解码（音频）",
+            seed: 0, seed_mode: "randomize",
+            decode_video: "XB-BOX - VAE解码（原版优化）", decode_cleanup: "卸载显存模型",
+            second: {
+                enabled: false,
+                upscaler_model: "minimax_h3_latent_upscaler_3d_fp32.pth",
+                device: "cuda", precision: "fp32",
+                sampler: "euler", scheduler: "simple", steps: 3, denoise: 0.3,
+                sigmas_mode: "scheduler",
+                custom_sigmas: "0.8500, 0.6316, 0.3158, 0.0000",
+            },
         },
     };
 }
 
 // ── 配置面板 ──────────────────────────────────────────────
+// 槽位类型顺序（与后端 _build_asset_intro 的 _SLOT_TYPE_ORDER 一致）
+const REF_SLOT_ORDER = { "角色": 0, "场景": 1, "道具": 2, "分镜": 3, "其他": 4, "视频": 0, "音频": 0 };
+
+// 按勾选素材生成只读的三路描述文本（供 LLM 拆解/增强使用，与后端 _build_asset_intro 完全一致）
+function buildRefIntro(assets) {
+    const out = { image: [], video: [], audio: [] };
+    const slotMap = buildSlotMap(assets || {});
+    const collect = (kind, key, pool) => {
+        ((assets?.[key]) || []).forEach((item, i) => {
+            if (item?.enabled === false) return;
+            const name = (item?.name || "").trim();
+            if (!name) return;
+            const st = slotTypeOf(kind, item?.type || "");
+            const slot = slotMap[`${kind}:${i}`] || st;
+            const desc = (item?.description || "").trim();
+            pool.push({ order: REF_SLOT_ORDER[st] ?? 9, L: slot.slice(st.length), text: `${slot} = ${name}${desc ? `（${desc}）` : ""}` });
+        });
+    };
+    collect("image", "images", out.image);
+    collect("video", "videos", out.video);
+    collect("audio", "audios", out.audio);
+    const fmt = (arr) => arr.slice().sort((a, b) => a.order - b.order || a.L.localeCompare(b.L)).map((x) => x.text).join("\n");
+    return { image: fmt(out.image), video: fmt(out.video), audio: fmt(out.audio) };
+}
+
+function renderAssetsTools(c, s, build) {
+    c.append(makeSectionTitle("素材库导入导出"));
+    const row = el("div", "display:flex;align-items:center;gap:8px;margin:0 0 4px;");
+    const exp = el("button", "flex:1 1 0;background:#2a4a6a;color:#cfe3f7;border:1px solid #5b9bd5;border-radius:4px;padding:7px 10px;font-size:12px;cursor:pointer;white-space:nowrap;", "⬆️ 导出素材库");
+    const imp = el("button", "flex:1 1 0;background:#3a5a2a;color:#d7f0c8;border:1px solid #6b9b5b;border-radius:4px;padding:7px 10px;font-size:12px;cursor:pointer;white-space:nowrap;", "⬇️ 导入素材库");
+    const status = el("div", "font-size:11px;color:#9fd6a4;margin:0 0 10px;min-height:14px;white-space:pre-wrap;", "");
+    const say = (msg, isErr) => {
+        status.textContent = msg;
+        status.style.color = isErr ? "#e08a8a" : "#9fd6a4";
+        try { notify(msg, isErr ? "error" : "success"); } catch (_) {}
+    };
+    exp.title = "把当前已添加的素材保存为 output/jzl/素材库.txt";
+    imp.title = "选择素材库 txt 文件并载入（覆盖当前列表）";
+    exp.addEventListener("click", async () => {
+        exp.disabled = true; say("正在导出…");
+        try {
+            const resp = await api.fetchApi("/jzl/export_assets", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ assets: s.assets || { images: [], videos: [], audios: [] } }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (data?.ok) say("✅ 已导出：output/jzl/素材库.txt");
+            else say(`❌ ${data?.error || ("导出失败（HTTP " + resp.status + "）——请确认已重启 ComfyUI 且新版已部署")}`, true);
+            console.log("[JZL 素材库] export resp", resp.status, data);
+        } catch (e) { say(`❌ 导出失败：${(e && e.message) || e}`, true); console.error(e); }
+        exp.disabled = false;
+    });
+    imp.addEventListener("click", () => {
+        if (!document.__jzlImportInput) {
+            const inp = document.createElement("input");
+            inp.type = "file";
+            inp.accept = ".txt,text/plain";
+            inp.style.display = "none";
+            document.body.appendChild(inp);
+            document.__jzlImportInput = inp;
+        }
+        const inp = document.__jzlImportInput;
+        inp.value = "";
+        inp.onchange = async () => {
+            const file = inp.files && inp.files[0];
+            if (!file) return;
+            imp.disabled = true; say(`正在导入 ${file.name}…`);
+            try {
+                const text = await new Promise((resolve, reject) => {
+                    const r = new FileReader();
+                    r.onload = () => resolve(r.result || "");
+                    r.onerror = () => reject(r.error);
+                    r.readAsText(file, "utf-8");
+                });
+                const resp = await api.fetchApi("/jzl/import_assets", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ text }),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (data?.ok && data.assets) {
+                    s.assets = data.assets;
+                    build?.();
+                    c.dispatchEvent(new Event("change", { bubbles: true }));  // 触发自动保存
+                    const n = (data.assets.images || []).length + (data.assets.videos || []).length + (data.assets.audios || []).length;
+                    say(`✅ 已从 ${file.name} 导入 ${n} 个素材并保存`);
+                } else {
+                    say(`❌ ${data?.error || ("导入失败（HTTP " + resp.status + "）")}`, true);
+                }
+                console.log("[JZL 素材库] import resp", resp.status, data);
+            } catch (e) { say(`❌ 导入失败：${(e && e.message) || e}`, true); console.error(e); }
+            imp.disabled = false;
+        };
+        inp.click();
+    });
+    row.append(exp, imp);
+    c.append(row, status);
+}
+
 function renderAssetsPanel(c, s, mode) {
     const assets = s.assets;
     // 素材引用提示（生成路径由引用内容自动推断）
@@ -1336,15 +1565,42 @@ function renderAssetsPanel(c, s, mode) {
     renderAssetSection(c, "image", assets.images, "🖼️ 图片");
     renderAssetSection(c, "video", assets.videos, "🎬 视频");
     renderAssetSection(c, "audio", assets.audios, "🎧 音频");
+
+    // 底部：只读的「传给 LLM 的素材描述」（按勾选素材自动生成，顺序：角色→场景→道具→自定义，字母 A/B/C）
+    c.append(makeSectionTitle("📄 传给 LLM 的素材描述（只读，按勾选自动生成）"));
+    const mkRef = (label, getVal) => {
+        const row = el("div", "display:flex;align-items:flex-start;gap:10px;margin-bottom:8px;");
+        const lab = el("div", "flex:0 0 72px;font-size:12px;color:var(--descrip-text,#999);padding-top:6px;", label);
+        const ta = el("textarea", "flex:1;min-width:0;resize:vertical;background:var(--comfy-input-bg,#1d1d1d);color:var(--fg-color,#ccc);border:1px solid var(--border-color,#444);border-radius:4px;padding:6px;font-size:11px;line-height:1.5;");
+        ta.readOnly = true;
+        const set = () => { const v = getVal(); ta.value = v; ta.rows = Math.max(2, Math.min(8, v.split("\n").length)); };
+        set();
+        row.append(lab, ta);
+        return { row, set };
+    };
+    const ri = mkRef("图片描述", () => buildRefIntro(s.assets).image);
+    const rv = mkRef("视频描述", () => buildRefIntro(s.assets).video);
+    const ra = mkRef("音频描述", () => buildRefIntro(s.assets).audio);
+    c.append(ri.row, rv.row, ra.row);
+    // 素材变化（change 冒泡到 c）时刷新只读描述；委托模式避免重建时重复/失效监听
+    c.__jzlRefIntroRefresh = () => { ri.set(); rv.set(); ra.set(); };
+    if (!c.__jzlRefIntroBound) {
+        c.__jzlRefIntroBound = true;
+        c.addEventListener("change", () => { try { c.__jzlRefIntroRefresh?.(); } catch (_) {} });
+    }
 }
 
 function renderAutoSave(c, s) {
-    c.append(field("自动保存", checkboxControl(s.auto_save !== false, "修改参数即时保存（无需点保存按钮）", v => { s.auto_save = v; })));
+    // 自动保存已移至弹窗底部，与「取消/保存」按钮同行（见 buildModal footer）
 }
 
-function renderPromptPanel(c, s, d) {
+function renderPromptPanel(c, s, d, node) {
     const p = s.enhance;
     renderAutoSave(c, s);
+
+    // ── 输出语言（最顶优先选择；读写 manager_settings.enhance.prompt_lang，随工作流保存）──
+    c.append(makeSectionTitle("输出语言"));
+    c.append(field("输出语言", selectControl(["中文 [ZH]", "英文 [EN]"], p.prompt_lang || "中文 [ZH]", v => { p.prompt_lang = v; })));
 
     // ── 开关 ──
     c.append(makeSectionTitle("开关"));
@@ -1352,51 +1608,85 @@ function renderPromptPanel(c, s, d) {
     c.append(field("开启增强", checkboxControl(p.enabled === true, "拆解后对每个分段的详细描述再做润色", v => { p.enabled = v; })));
     c.append(field("强制卸载", checkboxControl(p.force_offload === true, "LLM 用完即卸载（增强开启时等增强后再卸）", v => { p.force_offload = v; })));
 
-    // ── LLM 后端 ──
+    // ── LLM 后端（方形勾选单选：本地 / 在线API，切换只显示对应设置区块；样式与「故事拆解」一致）──
     c.append(makeSectionTitle("LLM 后端"));
-    c.append(field("后端切换", selectControl(OPTIONS.llmBackend, p.llm_backend || OPTIONS.llmBackend[0], v => { p.llm_backend = v; })));
+    const backendRow = el("div", "display:flex;align-items:center;gap:16px;min-width:0;");
+    const backendCbs = [];
+    const mkBackendCb = (val, label) => {
+        const lab = el("label", "display:flex;align-items:center;gap:6px;font-size:13px;color:var(--descrip-text,#999);cursor:pointer;");
+        const c = el("input", "width:18px;height:18px;accent-color:#f59e0b;cursor:pointer;");
+        c.type = "checkbox";
+        c.checked = (String(p.llm_backend || "").includes("api") ? "在线API [api]" : "本地模型 [local]") === val;
+        c.addEventListener("change", () => {
+            if (c.checked) {
+                p.llm_backend = val;
+                backendCbs.forEach((x) => { if (x !== c) x.checked = false; });
+                syncBackend();
+            } else if (backendCbs.every((x) => !x.checked)) {
+                c.checked = true;  // 保持至少一个选中
+            }
+        });
+        lab.append(c, el("span", "", label));
+        backendRow.append(lab);
+        backendCbs.push(c);
+        return c;
+    };
+    c.append(field("LLM后端", backendRow));
 
     // ── 本地 LLM 模型 ──
+    const localBox = el("div", "");
+    localBox.append(makeSectionTitle("本地 LLM 模型"));
     const llm = p.llm || (p.llm = {});
-    c.append(makeSectionTitle("本地 LLM 模型"));
     const llmModels = (d?.llm_models && d.llm_models.length) ? d.llm_models : ["（未找到本地 LLM 模型）"];
     const mmprojModels = (d?.mmproj_models && d.mmproj_models.length) ? d.mmproj_models : ["None"];
     const chatHandlers = (d?.chat_handlers && d.chat_handlers.length) ? d.chat_handlers : ["None"];
     // 关键修复：下拉默认显示第一个模型，但 llm.model 仍为空 → 之前点保存会存成空串触发「未选择本地 LLM 模型」。
     // 打开面板时把「所见即所得」同步进存储：不切换直接保存也会持久化当前显示的模型。
     if (!llm.model && llmModels.length && !llmModels[0].startsWith("（")) llm.model = llmModels[0];
-    c.append(field("模型", selectControl(llmModels, llm.model || llmModels[0], v => { llm.model = v; })));
-    c.append(field("视觉模块 mmproj", selectControl(mmprojModels, llm.mmproj || "None", v => { llm.mmproj = v; })));
-    c.append(field("Chat Handler", selectControl(chatHandlers, llm.chat_handler || "None", v => { llm.chat_handler = v; })));
-    c.append(field("推理后端", selectControl(["llama-cpp-python", "llama-server"], llm.backend || "llama-cpp-python", v => { llm.backend = v; })));
-    c.append(field("上下文长度 n_ctx", numberControl(llm.n_ctx ?? 32768, { min: 1024, max: 262144, step: 128 }, v => { llm.n_ctx = Math.round(v); })));
-    c.append(field("显存上限 vram_limit (GB)", numberControl(llm.vram_limit ?? -1, { min: -1, max: 1024, step: 1 }, v => { llm.vram_limit = Math.round(v); })));
-    c.append(field("图像最小 tokens", numberControl(llm.image_min_tokens ?? 0, { min: 0, max: 4096, step: 32 }, v => { llm.image_min_tokens = Math.round(v); })));
-    c.append(field("图像最大 tokens", numberControl(llm.image_max_tokens ?? 0, { min: 0, max: 4096, step: 32 }, v => { llm.image_max_tokens = Math.round(v); })));
-    c.append(field("max_tokens", numberControl(llm.max_tokens ?? 8192, { min: 0, max: 262144, step: 1 }, v => { llm.max_tokens = Math.round(v); })));
-    c.append(field("top_k", numberControl(llm.top_k ?? 40, { min: 0, max: 1000, step: 1 }, v => { llm.top_k = Math.round(v); })));
-    c.append(field("top_p", numberControl(llm.top_p ?? 0.9, { min: 0, max: 1, step: 0.01 }, v => { llm.top_p = v; })));
-    c.append(field("min_p", numberControl(llm.min_p ?? 0.05, { min: 0, max: 1, step: 0.01 }, v => { llm.min_p = v; })));
-    c.append(field("typical_p", numberControl(llm.typical_p ?? 1.0, { min: 0, max: 1, step: 0.01 }, v => { llm.typical_p = v; })));
-    c.append(field("temperature", numberControl(llm.temperature ?? 0.6, { min: 0, max: 2, step: 0.01 }, v => { llm.temperature = v; })));
-    c.append(field("repeat_penalty", numberControl(llm.repeat_penalty ?? 1.05, { min: 0, max: 10, step: 0.01 }, v => { llm.repeat_penalty = v; })));
-    c.append(field("frequency_penalty", numberControl(llm.frequency_penalty ?? 0.0, { min: 0, max: 1, step: 0.01 }, v => { llm.frequency_penalty = v; })));
-    c.append(field("present_penalty", numberControl(llm.present_penalty ?? 0.0, { min: 0, max: 2, step: 0.01 }, v => { llm.present_penalty = v; })));
-    c.append(field("mirostat_mode", numberControl(llm.mirostat_mode ?? 0, { min: 0, max: 2, step: 1 }, v => { llm.mirostat_mode = Math.round(v); })));
-    c.append(field("mirostat_eta", numberControl(llm.mirostat_eta ?? 0.1, { min: 0, max: 1, step: 0.01 }, v => { llm.mirostat_eta = v; })));
-    c.append(field("mirostat_tau", numberControl(llm.mirostat_tau ?? 5.0, { min: 0, max: 10, step: 0.01 }, v => { llm.mirostat_tau = v; })));
-    c.append(field("GPU 设备", selectControl(["auto", "0", "1", "2", "3"], llm.gpu_device || "auto", v => { llm.gpu_device = v; })));
+    localBox.append(field("模型", selectControl(llmModels, llm.model || llmModels[0], v => { llm.model = v; })));
+    localBox.append(field("视觉模块 mmproj", selectControl(mmprojModels, llm.mmproj || "None", v => { llm.mmproj = v; })));
+    localBox.append(field("Chat Handler", selectControl(chatHandlers, llm.chat_handler || "None", v => { llm.chat_handler = v; })));
+    localBox.append(field("推理后端", selectControl(["llama-cpp-python", "llama-server"], llm.backend || "llama-cpp-python", v => { llm.backend = v; })));
+    localBox.append(field("上下文长度 n_ctx", numberControl(llm.n_ctx ?? 32768, { min: 1024, max: 262144, step: 128 }, v => { llm.n_ctx = Math.round(v); })));
+    localBox.append(field("显存上限 vram_limit (GB)", numberControl(llm.vram_limit ?? -1, { min: -1, max: 1024, step: 1 }, v => { llm.vram_limit = Math.round(v); })));
+    localBox.append(field("图像最小 tokens", numberControl(llm.image_min_tokens ?? 0, { min: 0, max: 4096, step: 32 }, v => { llm.image_min_tokens = Math.round(v); })));
+    localBox.append(field("图像最大 tokens", numberControl(llm.image_max_tokens ?? 0, { min: 0, max: 4096, step: 32 }, v => { llm.image_max_tokens = Math.round(v); })));
+    localBox.append(field("max_tokens", numberControl(llm.max_tokens ?? 8192, { min: 0, max: 262144, step: 1 }, v => { llm.max_tokens = Math.round(v); })));
+    localBox.append(field("top_k", numberControl(llm.top_k ?? 40, { min: 0, max: 1000, step: 1 }, v => { llm.top_k = Math.round(v); })));
+    localBox.append(field("top_p", numberControl(llm.top_p ?? 0.9, { min: 0, max: 1, step: 0.01 }, v => { llm.top_p = v; })));
+    localBox.append(field("min_p", numberControl(llm.min_p ?? 0.05, { min: 0, max: 1, step: 0.01 }, v => { llm.min_p = v; })));
+    localBox.append(field("typical_p", numberControl(llm.typical_p ?? 1.0, { min: 0, max: 1, step: 0.01 }, v => { llm.typical_p = v; })));
+    localBox.append(field("temperature", numberControl(llm.temperature ?? 0.6, { min: 0, max: 2, step: 0.01 }, v => { llm.temperature = v; })));
+    localBox.append(field("repeat_penalty", numberControl(llm.repeat_penalty ?? 1.05, { min: 0, max: 10, step: 0.01 }, v => { llm.repeat_penalty = v; })));
+    localBox.append(field("frequency_penalty", numberControl(llm.frequency_penalty ?? 0.0, { min: 0, max: 1, step: 0.01 }, v => { llm.frequency_penalty = v; })));
+    localBox.append(field("present_penalty", numberControl(llm.present_penalty ?? 0.0, { min: 0, max: 2, step: 0.01 }, v => { llm.present_penalty = v; })));
+    localBox.append(field("mirostat_mode", numberControl(llm.mirostat_mode ?? 0, { min: 0, max: 2, step: 1 }, v => { llm.mirostat_mode = Math.round(v); })));
+    localBox.append(field("mirostat_eta", numberControl(llm.mirostat_eta ?? 0.1, { min: 0, max: 1, step: 0.01 }, v => { llm.mirostat_eta = v; })));
+    localBox.append(field("mirostat_tau", numberControl(llm.mirostat_tau ?? 5.0, { min: 0, max: 10, step: 0.01 }, v => { llm.mirostat_tau = v; })));
+    localBox.append(field("GPU 设备", selectControl(["auto", "0", "1", "2", "3"], llm.gpu_device || "auto", v => { llm.gpu_device = v; })));
+    c.append(localBox);
 
     // ── 在线 API ──
+    const apiBox = el("div", "");
+    apiBox.append(makeSectionTitle("在线 API"));
     const api = p.api || (p.api = {});
-    c.append(makeSectionTitle("在线 API"));
-    c.append(field("服务商", selectControl(OPTIONS.providers, api.provider || OPTIONS.providers[0], v => { api.provider = v; })));
-    c.append(field("模型", textControl(api.model || "", "如 gpt-4o / deepseek-chat…", v => { api.model = v; })));
-    c.append(field("API Key", textControl(api.api_key || "", "sk-…", v => { api.api_key = v; })));
-    c.append(field("Base URL", textControl(api.base_url || "", "https://api.openai.com/v1", v => { api.base_url = v; })));
-    c.append(field("temperature", numberControl(api.temperature ?? 0.6, { min: 0, max: 2, step: 0.01 }, v => { api.temperature = v; })));
-    c.append(field("max_tokens", numberControl(api.max_tokens ?? 8192, { min: 1, max: 262144, step: 1 }, v => { api.max_tokens = Math.round(v); })));
-    c.append(field("thinking", selectControl(["disabled", "enabled"], api.thinking || "disabled", v => { api.thinking = v; })));
+    apiBox.append(field("服务商", selectControl(OPTIONS.providers, api.provider || OPTIONS.providers[0], v => { api.provider = v; })));
+    apiBox.append(field("模型", textControl(api.model || "deepseek-v4-flash", "deepseek-v4-flash…", v => { api.model = v; })));
+    apiBox.append(field("API Key", passwordControl(api.api_key || "", "sk-…（已隐藏）", v => { api.api_key = v; })));
+    apiBox.append(field("Base URL", textControl(api.base_url || "https://api.deepseek.com/v1", "https://api.deepseek.com/v1", v => { api.base_url = v; })));
+    apiBox.append(field("temperature", numberControl(api.temperature ?? 0.6, { min: 0, max: 2, step: 0.01 }, v => { api.temperature = v; })));
+    apiBox.append(field("max_tokens", numberControl(api.max_tokens ?? 8192, { min: 1, max: 262144, step: 1 }, v => { api.max_tokens = Math.round(v); })));
+    apiBox.append(field("thinking", selectControl(["disabled", "enabled"], api.thinking || "disabled", v => { api.thinking = v; })));
+    c.append(apiBox);
+
+    const syncBackend = () => {
+        const isApi = String(p.llm_backend || "").includes("api");
+        localBox.style.display = isApi ? "none" : "block";
+        apiBox.style.display = isApi ? "block" : "none";
+    };
+    mkBackendCb("本地模型 [local]", "本地模型");
+    mkBackendCb("在线API [api]", "在线API");
+    syncBackend();
 
     // ── 随机种子（剧本处理器与提示词增强共享，含生成后控制） ──
     c.append(makeSectionTitle("随机种子"));
@@ -1424,28 +1714,300 @@ function renderPreferenceSettingsPanel(c, s) {
     c.append(field("自定义镜头语言", textControl(p.custom || "", "选填。自由描述镜头要求…", v => { p.custom = v; })));
 }
 
-function renderPrefPanel(c, s) {
+function renderPrefPanel(c, s, d) {
     const p = s.sample_decode;
+    const sec = p.second || (p.second = {});
     renderAutoSave(c, s);
+
+    // ── 采样（一采）──
     c.append(makeSectionTitle("采样"));
     c.append(field("K采样器", selectControl(OPTIONS.samplers, p.sampler || OPTIONS.samplers[0], v => { p.sampler = v; })));
     c.append(field("调度器", selectControl(OPTIONS.schedulers, p.scheduler || OPTIONS.schedulers[0], v => { p.scheduler = v; })));
-    c.append(field("步数", numberControl(p.steps ?? 4, { min: 1, max: 200, step: 1 }, v => { p.steps = Math.round(v); })));
-    c.append(field("CFG", numberControl(p.cfg ?? 1.0, { min: 0, max: 30, step: 0.1 }, v => { p.cfg = v; })));
-    c.append(field("种子模式", selectControl(OPTIONS.seedModes, p.seed_mode || OPTIONS.seedModes[0], v => { p.seed_mode = v; })));
+    c.append(field("采样步数", numberControl(p.steps ?? 4, { min: 1, max: 200, step: 1 }, v => { p.steps = Math.round(v); })));
+    c.append(field("降噪系数", numberControl(p.denoise ?? 1.0, { min: 0, max: 1, step: 0.05 }, v => { p.denoise = v; })));
+    c.append(seedControlRow(p, "seed", "seed_mode", "随机种子"));
+
+    // ── 二次采样（开关 + 设置；不折叠，设置项始终显示；种子与一采共享）──
+    c.append(makeSectionTitle("二次采样"));
+    c.append(field("启用二次采样", checkboxControl(!!sec.enabled,
+        "一采后➡️分离latent➡️ 视频latent放大➡️合并latent➡️二次采样",
+        v => { sec.enabled = v; })));
+    const upModels = (d?.upscaler_models && d.upscaler_models.length) ? d.upscaler_models : ["minimax_h3_latent_upscaler_3d_fp32.pth"];
+    c.append(field("latent放大模型选择", selectControl(upModels, sec.upscaler_model || upModels[0], v => { sec.upscaler_model = v; })));
+    c.append(field("运行设备", selectControl(["cuda", "rocm", "cpu"], sec.device || "cuda", v => { sec.device = v; })));
+    c.append(field("精度", selectControl(["fp32", "fp16", "bf16"], sec.precision || "fp32", v => { sec.precision = v; })));
+
+    // ── Sigmas 模式（单选：调度器 / 自定义）──
+    // 调度器=用 调度器+采样步数+降噪系数 生成 sigmas 二采；自定义=直接用下方输入的自定义 sigmas 序列（对齐 1190 ManualSigmas）
+    const sigModeRow = el("div", "display:flex;align-items:center;gap:16px;min-width:0;");
+    const mkSigRadio = (val, label) => {
+        const lab = el("label", "display:flex;align-items:center;gap:5px;font-size:13px;color:var(--descrip-text,#999);cursor:pointer;");
+        const r = el("input", "accent-color:#f59e0b;cursor:pointer;");
+        r.type = "radio"; r.name = "jzl_second_sigmas"; r.value = val;
+        r.checked = (sec.sigmas_mode || "scheduler") === val;
+        r.addEventListener("change", () => { if (r.checked) { sec.sigmas_mode = val; syncSigMode(); } });
+        lab.append(r, el("span", "", label));
+        sigModeRow.append(lab);
+        return r;
+    };
+    c.append(field("Sigmas模式", sigModeRow));
+    c.append(field("K采样器", selectControl(OPTIONS.samplers, sec.sampler || "euler", v => { sec.sampler = v; })));
+    const fScheduler = field("调度器", selectControl(OPTIONS.schedulers, sec.scheduler || "simple", v => { sec.scheduler = v; }));
+    const fSteps = field("采样步数", numberControl(sec.steps ?? 3, { min: 1, max: 200, step: 1 }, v => { sec.steps = Math.round(v); }));
+    const fDenoise = field("降噪系数", numberControl(sec.denoise ?? 0.3, { min: 0, max: 1, step: 0.05 }, v => { sec.denoise = v; }));
+    const fCustom = field("自定义Sigmas", textControl(sec.custom_sigmas || "0.8500, 0.6316, 0.3158, 0.0000", "0.8500, 0.6316, 0.3158, 0.0000", v => { sec.custom_sigmas = v; }));
+    c.append(fScheduler, fSteps, fDenoise, fCustom);
+    const syncSigMode = () => {
+        const custom = (sec.sigmas_mode || "scheduler") === "custom";
+        // 注意：field 容器是 flex 布局，恢复显示必须显式设回 "flex"（设 "" 会移除 display 声明，
+        // 回落到块级布局，导致标签/控件错位、控件变窄贴边）
+        fScheduler.style.display = custom ? "none" : "flex";
+        fSteps.style.display = custom ? "none" : "flex";
+        fDenoise.style.display = custom ? "none" : "flex";
+        fCustom.style.display = custom ? "flex" : "none";
+    };
+    mkSigRadio("scheduler", "调度器");
+    mkSigRadio("custom", "自定义");
+    syncSigMode();
+
+    // ── 解码 ──
     c.append(makeSectionTitle("解码"));
-    c.append(field("视频解码", selectControl(OPTIONS.decodeVideo, p.decode_video || OPTIONS.decodeVideo[0], v => { p.decode_video = v; })));
-    c.append(field("音频解码", selectControl(OPTIONS.decodeAudio, p.decode_audio || OPTIONS.decodeAudio[0], v => { p.decode_audio = v; })));
+    // 视频解码固定 XB-BOX 优化版（=原版+显存清理，与 1146 一致）；清理选项完整保留
+    c.append(field("视频解码", el("div", "font-size:13px;color:var(--fg-color,#ddd);padding:6px 10px;background:var(--comfy-input-bg,#2a2a2a);border:1px solid var(--border-color,#444);border-radius:4px;", "XB-BOX - VAE解码（原版优化）")));
+    c.append(field("解码前清理", selectControl(OPTIONS.decodeCleanup, p.decode_cleanup || OPTIONS.decodeCleanup[0], v => { p.decode_cleanup = v; })));
+    c.append(field("音频解码", el("div", "font-size:13px;color:var(--fg-color,#ddd);padding:6px 10px;background:var(--comfy-input-bg,#2a2a2a);border:1px solid var(--border-color,#444);border-radius:4px;", "VAE解码（音频）")));
+}
+
+// ── 💾 视频保存设置面板（读写隐藏 schema widget） ─────────────────
+// 节点表面的「保存模式」已移入本面板；新增「分段视频自动保存 / 分段视频自动合并」+ 路径。
+// 这些值直接写入隐藏 widget（save_mode/auto_save/auto_save_path/auto_merge/auto_merge_path），
+// 随工作流序列化，execute 直接读取，不经过 manager_settings。
+function renderSaveSettingsPanel(c, node, d) {
+    const w = (name) => (node?.widgets || []).find((x) => x.name === name);
+    const saveModeW = w("save_mode");
+    const autoSaveW = w("auto_save");
+    const autoMergeW = w("auto_merge");
+    const autoMergeDelW = w("auto_merge_delete");
+    const val = (ww, dflt) => (ww ? readWidgetValue(ww) : undefined) ?? dflt;
+    // 保存/合并位置固定为运行中 ComfyUI 的 output/jzl（运行时可推导，不写死盘符，不可修改，只读显示）
+    const saveDir = (d && d.save_dir) || "output/jzl";
+    const locRow = (label) => {
+        const row = el("div", "display:flex;align-items:center;gap:8px;font-size:12px;color:var(--descrip-text,#999);margin:0 0 6px 172px;line-height:1.6;");
+        row.append(el("span", "white-space:nowrap;color:var(--fg-color,#ccc);", label));
+        row.append(el("code", "font-family:monospace;background:var(--comfy-input-bg,#2a2a2a);border:1px solid var(--border-color,#444);border-radius:4px;padding:3px 8px;color:#9fd6a4;user-select:all;", saveDir));
+        return row;
+    };
+
+    // 保存设置（原有下游 VHS 保存逻辑，已移入面板）
+    c.append(makeSectionTitle("保存设置"));
+    c.append(field("保存模式", selectControl(["分段保存", "拼接保存"], val(saveModeW, "分段保存"),
+        (v) => { if (saveModeW) setWidgetValue(saveModeW, v); })));
+    c.append(el("div", "font-size:12px;color:var(--descrip-text,#999);margin:-4px 0 6px 172px;line-height:1.6;",
+        "分段保存=按顺序批量输出每段图像/音频（接「视频保存分配→VHS」）；拼接保存=全部生成后拼接成一段再输出。此选项只影响下游 VHS 保存方式，保留原有逻辑。"));
+
+    // 分段视频自动保存（ffmpeg 逐段落盘，位置固定 output/jzl）
+    c.append(makeSectionTitle("ffmpeg 逐段落盘"));
+    const asRow = field("分段视频自动保存", checkboxControl(!!val(autoSaveW, false),
+        "每段跑完立刻用 ffmpeg 落盘 mp4（不依赖下游 VHS）",
+        (v) => { if (autoSaveW) setWidgetValue(autoSaveW, v); sync(); }));
+    const asLoc = locRow("保存位置：");
+    c.append(asRow, asLoc);
+
+    // 分段视频自动合并（合并输出位置固定 output/jzl）
+    c.append(makeSectionTitle("分段视频自动合并"));
+    const amRow = field("分段视频自动合并", checkboxControl(!!val(autoMergeW, false),
+        "把落盘的 mp4 按顺序拼接为完整一个视频（无论保存模式；未开自动保存时内部临时落盘）",
+        (v) => { if (autoMergeW) setWidgetValue(autoMergeW, v); sync(); }));
+    const amDelRow = field("合并后删除分段视频", checkboxControl(!!val(autoMergeDelW, false),
+        "合并完成后删除各分段 mp4（仅保留合并结果；未开自动保存时的临时分段本就会清理）",
+        (v) => { if (autoMergeDelW) setWidgetValue(autoMergeDelW, v); }));
+    const amLoc = locRow("合并输出位置：");
+    c.append(amRow, amLoc, amDelRow);
+
+    const sync = () => {
+        const as = !!val(autoSaveW, false);
+        const am = !!val(autoMergeW, false);
+        asLoc.style.display = as ? "" : "none";
+        amLoc.style.display = am ? "" : "none";
+        amDelRow.style.display = am ? "" : "none";
+    };
+    sync();
+}
+
+// ── 📖 节点使用说明面板 ────────────────────────────────
+// 使用说明内置回退 HTML（OpenPose 式内嵌：后端 /jzl/usage_md 不可用时也能显示；完整文档见 docs/USAGE.md）
+const USAGE_FALLBACK_HTML = `
+<div style="font-size:13px;line-height:1.8;color:var(--fg-color,#ddd);">
+<h3 style="margin:0 0 8px;font-size:16px;font-weight:700;color:var(--fg-color,#eee);border-bottom:1px solid var(--border-color,#444);padding-bottom:4px;">MiniMax-H3 生成管理器 · 使用说明</h3>
+<p style="margin:6px 0;">一个节点完成 <b>剧本分段 → 参考调度 → 编码 → 采样 → 解码</b> 全流程，输出生成总线，无缝对接「视频保存分配」与 VHS 保存，亦支持 ffmpeg 逐段落盘 / 自动合并。</p>
+<h4 style="margin:10px 0 4px;color:var(--fg-color,#eee);">一、快速上手</h4>
+<ol style="padding-left:20px;margin:4px 0;">
+<li>添加节点：JZL/MiniMax → <code>JZL - 🤖 MiniMax-H3短剧生成管理器</code></li>
+<li>接好模型输入：主模型 / CLIP / 视觉VAE / 音频VAE（含视频或音频参考时必须接音频VAE）</li>
+<li>在节点表面 📝 提示词 框输入故事 / 剧本（可用 @ 引用素材）</li>
+<li>点「📁 参考素材管理」上传并配置素材（图片 / 视频 / 音频）</li>
+<li>设置「视频数量」（1~48）、画幅、时长等参数后运行</li>
+</ol>
+<p style="margin:4px 0;">提示：不接模型也能运行——只做剧本分段 + 调度，不做采样解码。</p>
+<h4 style="margin:10px 0 4px;color:var(--fg-color,#eee);">二、运行模式</h4>
+<ul style="padding-left:20px;margin:4px 0;">
+<li><b>故事拆解模式</b>：按情节拆解为 N 段（不创意扩展）</li>
+<li><b>故事扩展模式</b>：先扩写故事正文，再拆解为 N 段</li>
+<li><b>穿透生成模式</b>：跳过 LLM 拆解与增强，直接用提示词生成</li>
+<li><b>仅提示词输出</b>：只用 LLM 处理提示词经「已处理剧本」输出文本，不生成视频</li>
+</ul>
+<h4 style="margin:10px 0 4px;color:var(--fg-color,#eee);">三、素材与参考调度</h4>
+<ul style="padding-left:20px;margin:4px 0;">
+<li>引用上限：图片 ≤9 / 视频 ≤3 / 音频 ≤3，总参考 ≤12（官方上限）</li>
+<li>提示词中用 @素材名 引用，或由调度指令（类型:槽位名）自动匹配</li>
+<li>生成路径按引用自动推断：有视频→多参考(REF2VA)；否则按参考图数量选首尾帧/首帧/纯文本</li>
+</ul>
+<h4 style="margin:10px 0 4px;color:var(--fg-color,#eee);">四、界面按钮（4×2）</h4>
+<p style="margin:4px 0;">📁 参考素材管理 ｜ 📝 剧本拆解配置 ｜ 🎭 采样解码设置 ｜ 🎯 镜头参数预设 ｜ ➕ 常用提示词元素 ｜ 🎯 参考元素切换 ｜ 💾 视频保存设置 ｜ 📖 节点使用说明</p>
+<ul style="padding-left:20px;margin:4px 0;">
+<li><b>保存模式</b>：分段保存（逐段输出接 VHS）/ 拼接保存（合并为一段再输出）——仅影响下游 VHS</li>
+<li><b>分段视频自动保存</b>：每段跑完立即用 ffmpeg 落盘 mp4 到指定目录，不依赖下游 VHS</li>
+<li><b>分段视频自动合并</b>：把落盘的各段 mp4 按顺序拼接为完整一个视频（无论保存模式）</li>
+</ul>
+<h4 style="margin:10px 0 4px;color:var(--fg-color,#eee);">五、采样与解码</h4>
+<ul style="padding-left:20px;margin:4px 0;">
+<li>采样：res_multistep / euler 等 K 采样器；可调 步数 / CFG / 降噪 / 种子</li>
+<li>解码：视频 XB-BOX - VAE解码（原版优化）；音频 VAE解码（音频）</li>
+<li>逐段顺序生成：每段「采样→解码→写入总线→（可选落盘）」完成后才进入下一段</li>
+</ul>
+<h4 style="margin:10px 0 4px;color:var(--fg-color,#eee);">六、输出</h4>
+<ul style="padding-left:20px;margin:4px 0;">
+<li><b>图像</b> IMAGE 列表：每段视频帧（分段保存）或拼接后一段（拼接保存）</li>
+<li><b>音频</b> AUDIO 列表：每段音频（与图像一一对应）</li>
+<li><b>已处理剧本</b> STRING：全部 LLM 处理后的剧本文本</li>
+<li>配合「JZL - 💾 视频保存分配」把「生成总线」接上，每组接一个 VHS Video Combine 逐段保存 mp4</li>
+</ul>
+<h4 style="margin:10px 0 4px;color:var(--fg-color,#eee);">七、常见问题</h4>
+<ul style="padding-left:20px;margin:4px 0;">
+<li>没有生成视频？检查 CLIP/VAE/model 是否接好；含视频或音频参考还需接 audio_vae</li>
+<li>视频数量改了没生效？确认剧本拆解配置已保存（固定种子时）</li>
+<li>想跑一段存一段？在「💾 视频保存设置」勾选「分段视频自动保存」并填路径</li>
+</ul>
+</div>
+`;
+
+function renderHelpPanel(c) {
+    const box = el("div", "font-size:13px;line-height:1.7;color:var(--fg-color,#ddd);");
+    c.append(box);
+    api.fetchApi("/jzl/usage_md")
+        .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.text(); })
+        .then((md) => { box.innerHTML = mdToHtml(md); })
+        .catch(() => { box.innerHTML = USAGE_FALLBACK_HTML; });  // API 不可用时显示内置说明
+
+    // 底部：支持与打赏 + 其他仓库 + 联系交流
+    const qrWrap = el("div", "margin-top:18px;border-top:1px solid var(--border-color,#444);padding-top:14px;");
+    qrWrap.append(el("div", "font-size:13px;font-weight:600;color:var(--fg-color,#eee);margin-bottom:10px;", "💰 支持与打赏"));
+    qrWrap.append(el("div", "font-size:15px;font-weight:700;color:#f5a623;margin-bottom:12px;line-height:1.8;white-space:pre-line;",
+        "本项目使用付费 AI 工具进行开发、调试和测试维护。\n如果这个工具对你有用，帮助到了你，欢迎打赏支持，你的支持将加速开发进度。"));
+    const qrRow = el("div", "display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;");
+    const qrFiles = [["DS01.png", "微信"], ["DS02.png", "支付宝"]];
+    qrFiles.forEach(([f, label]) => {
+        const cell = el("div", "flex:1;min-width:200px;text-align:center;");
+        const img = el("img", "width:180px;height:180px;object-fit:contain;background:#fff;border:1px solid var(--border-color,#444);border-radius:8px;");
+        img.alt = label;
+        img.src = api.apiURL(`/jzl/usage_qr/${f}`);
+        img.onerror = () => { img.style.display = "none"; };
+        const ph = el("div", "font-size:13px;font-weight:600;color:var(--fg-color,#ddd);margin-top:6px;", label);
+        cell.append(img, ph);
+        qrRow.append(cell);
+    });
+    qrWrap.append(qrRow);
+
+    // 我的 ComfyUI 节点仓库
+    qrWrap.append(el("div", "font-size:13px;font-weight:600;color:var(--fg-color,#eee);margin:16px 0 6px;", "我的 ComfyUI 节点仓库"));
+    const repoRow = el("div", "display:flex;gap:10px;flex-wrap:wrap;");
+    const mkRepo = (label, url) => {
+        const a = el("a", "display:inline-block;background:#2a4a6a;color:#cfe3f7;border:1px solid #5b9bd5;border-radius:6px;padding:7px 14px;font-size:12px;text-decoration:none;cursor:pointer;", label);
+        a.href = url; a.target = "_blank"; a.rel = "noopener noreferrer";
+        a.addEventListener("mousedown", (e) => e.stopPropagation());
+        return a;
+    };
+    repoRow.append(
+        mkRepo("🧰 小白工具箱（XB_ToolBox）", "https://github.com/wjluoxiao/XB_ToolBox"),
+        mkRepo("🎬 ComfyUI-JZL-MiniMax-H3", "https://github.com/wjluoxiao/ComfyUI-JZL-MiniMax-H3"),
+    );
+    qrWrap.append(repoRow);
+
+    // 模型与工作流下载
+    qrWrap.append(el("div", "font-size:13px;font-weight:600;color:var(--fg-color,#eee);margin:16px 0 6px;", "模型与工作流下载"));
+    const dlRow = el("div", "display:flex;gap:10px;flex-wrap:wrap;");
+    dlRow.append(
+        mkRepo("🟢机制罗的模型总仓库", "https://pan.quark.cn/s/6ec0a5f56d08"),
+        mkRepo("🟢机制罗的工作流仓库", "https://pan.quark.cn/s/65b5abcb7879"),
+    );
+    qrWrap.append(dlRow);
+
+    // 联系与交流
+    qrWrap.append(el("div", "font-size:13px;font-weight:600;color:var(--fg-color,#eee);margin:16px 0 6px;", "📮 联系与交流"));
+    const bili = mkRepo("B站主页：space.bilibili.com/302329373", "https://space.bilibili.com/302329373");
+    bili.style.background = "#2a3a5a";
+    qrWrap.append(bili);
+    const qqRow = el("div", "display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--descrip-text,#999);line-height:1.8;margin-top:4px;");
+    qqRow.append(el("span", "", "⚡️充电股东群：136812541"));
+    qqRow.append(el("span", "", "🤖QQ交流群1：231033995"));
+    qqRow.append(el("span", "", "🤖QQ交流群2：56798547"));
+    qrWrap.append(qqRow);
+    c.append(qrWrap);
+}
+
+// 轻量 Markdown → HTML（标题/列表/代码块/加粗/行内代码/链接，够用即可）
+function mdToHtml(md) {
+    const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const inline = (s) => {
+        let out = esc(s);
+        out = out.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+        out = out.replace(/`([^`]+)`/g, "<code style='background:var(--comfy-input-bg,#222);padding:1px 4px;border-radius:3px;'>$1</code>");
+        out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+        return out;
+    };
+    const lines = md.replace(/\r\n/g, "\n").split("\n");
+    let html = "";
+    let inCode = false;
+    let codeBuf = [];
+    let inUl = false;
+    const closeUl = () => { if (inUl) { html += "</ul>\n"; inUl = false; } };
+    for (const raw of lines) {
+        const t = raw.trim();
+        if (t.startsWith("```")) {
+            if (inCode) { html += "<pre style='background:var(--comfy-input-bg,#1d1d1d);padding:10px;border-radius:6px;overflow-x:auto;font-size:12px;line-height:1.5;'>" + esc(codeBuf.join("\n")) + "</pre>\n"; codeBuf = []; inCode = false; }
+            else { closeUl(); inCode = true; }
+            continue;
+        }
+        if (inCode) { codeBuf.push(raw); continue; }
+        if (!t) { closeUl(); continue; }
+        if (/^#{1,6}\s/.test(t)) {
+            closeUl();
+            const lvl = t.match(/^#+/)[0].length;
+            html += `<h${lvl} style="margin:14px 0 6px;font-size:${lvl === 1 ? 18 : 15}px;font-weight:700;color:var(--fg-color,#eee);border-bottom:1px solid var(--border-color,#444);padding-bottom:3px;">${inline(t.replace(/^#+\s*/, ""))}</h${lvl}>\n`;
+            continue;
+        }
+        if (/^[-*]\s/.test(t)) {
+            if (!inUl) { html += "<ul style='padding-left:20px;'>\n"; inUl = true; }
+            html += `<li style="margin:3px 0;">${inline(t.replace(/^[-*]\s*/, ""))}</li>\n`;
+            continue;
+        }
+        closeUl();
+        html += `<p style="margin:6px 0;">${inline(t)}</p>\n`;
+    }
+    if (inCode) html += "<pre style='background:var(--comfy-input-bg,#1d1d1d);padding:10px;border-radius:6px;overflow-x:auto;font-size:12px;line-height:1.5;'>" + esc(codeBuf.join("\n")) + "</pre>\n";
+    closeUl();
+    return html;
 }
 
 function buildModal(node, data, panelId) {
     ensureManagerStyle();
     const settings = (data && data.settings) ? data.settings : defaultSettings();
     const d = data || { llm_models: [], mmproj_models: ["None"], chat_handlers: ["None"] };
-    const title = (PANELS[panelId] && PANELS[panelId].label) || "🎬 MiniMax-H3生成管理器";
+    const title = (PANELS[panelId] && PANELS[panelId].label) || "🎬 JZL - 🤖 MiniMax-H3短剧生成管理器";
 
     const overlay = el("div", "position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:9999;display:flex;align-items:center;justify-content:center;");
     const dialog = el("section", "background:#1c1c1e;border:1px solid #333;border-radius:8px;width:820px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 20px 40px rgba(0,0,0,0.6);");
+    dialog.className = "jzl-modal";
     dialog.setAttribute("role", "dialog");
     dialog.setAttribute("aria-modal", "true");
     dialog.setAttribute("aria-label", title);
@@ -1459,10 +2021,21 @@ function buildModal(node, data, panelId) {
     // 单面板内容
     const panelBox = el("div", "padding:16px 20px;overflow-y:auto;flex:1;min-height:280px;");
     switch (panelId) {
-        case "assets": renderAutoSave(panelBox, settings); renderAssetsPanel(panelBox, settings, d.mode); break;
-        case "prompt": renderPromptPanel(panelBox, settings, d); break;
-        case "preference": renderPrefPanel(panelBox, settings); break;
+        case "assets": {
+            const buildAssets = () => {
+                panelBox.innerHTML = "";
+                renderAutoSave(panelBox, settings);
+                renderAssetsTools(panelBox, settings, buildAssets);
+                renderAssetsPanel(panelBox, settings, d.mode);
+            };
+            buildAssets();
+            break;
+        }
+        case "prompt": renderPromptPanel(panelBox, settings, d, node); break;
+        case "preference": renderPrefPanel(panelBox, settings, d); break;
         case "preference_settings": renderPreferenceSettingsPanel(panelBox, settings); break;
+        case "save_settings": renderSaveSettingsPanel(panelBox, node, d); break;
+        case "help": renderHelpPanel(panelBox); break;
         default: renderAutoSave(panelBox, settings);
     }
     dialog.append(panelBox);
@@ -1472,8 +2045,16 @@ function buildModal(node, data, panelId) {
     const footer = el("div", "padding:15px 20px;border-top:1px solid var(--border-color,#444);display:flex;justify-content:flex-end;gap:10px;background:#18181a;border-bottom-left-radius:8px;border-bottom-right-radius:8px;");
     const cancelBtn = el("button", "background:transparent;border:1px solid var(--border-color,#555);color:#fff;border-radius:4px;padding:8px 20px;font-size:14px;cursor:pointer;", "取消");
     const saveBtn = el("button", "background:#2d5a88;color:#fff;border:none;border-radius:4px;padding:8px 20px;font-size:14px;font-weight:600;cursor:pointer;", "💾 保存");
-    footer.append(cancelBtn, saveBtn);
+    // 自动保存：统一移到弹窗底部，与「取消/保存」同行并靠左（样式与其他勾选框一致）
+    const autoSaveRow = el("label", "display:flex;align-items:center;gap:6px;font-size:13px;color:var(--descrip-text,#999);cursor:pointer;margin-right:auto;");
+    const autoSaveCb = el("input", "width:18px;height:18px;accent-color:#f59e0b;cursor:pointer;");
+    autoSaveCb.type = "checkbox";
+    autoSaveCb.checked = settings.auto_save !== false;
+    autoSaveCb.addEventListener("change", () => { settings.auto_save = autoSaveCb.checked; });
+    autoSaveRow.append(autoSaveCb, el("span", "", "自动保存"));
+    footer.append(autoSaveRow, cancelBtn, saveBtn);
     dialog.append(error, footer);
+    if (panelId === "help") { saveBtn.style.display = "none"; autoSaveRow.style.display = "none"; }  // 使用说明面板无需保存/自动保存
 
     overlay.append(dialog);
     document.body.append(overlay);
@@ -1525,11 +2106,11 @@ app.registerExtension({
             const r = orig?.apply(this, arguments);
             const self = this;
 
-            // 1. 隐藏内部存储 widget（internal_prompt）与旧 mode；prompt_input 原生显示（只读外部端口）
+            // 1. 隐藏内部存储 widget（internal_prompt）与旧 mode
             const vcWidget = (self.widgets || []).find((w) => w.name === "video_count");
-            const piWidget = (self.widgets || []).find((w) => w.name === "prompt_input");
             const ipWidget = (self.widgets || []).find((w) => w.name === "internal_prompt");
-            const hiddenNames = new Set(["mode", "internal_prompt", "manager_settings"]);
+            const hiddenNames = new Set(["mode", "internal_prompt", "manager_settings",
+                "save_mode", "auto_save", "auto_save_path", "auto_merge", "auto_merge_path", "auto_merge_delete"]);
             for (const w of self.widgets || []) {
                 if (!w) continue;
                 const nm = w.name || "";
@@ -1547,9 +2128,9 @@ app.registerExtension({
             const container = document.createElement("div");
             container.style.cssText = "width:100%;height:100%;display:flex;flex-direction:column;gap:6px;padding:8px;box-sizing:border-box;overflow:hidden;";
 
-            // 按钮区（2×2）
+            // 按钮区（4×2）
             const btnGrid = document.createElement("div");
-            btnGrid.style.cssText = "display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:30px;gap:6px;";
+            btnGrid.style.cssText = "display:grid;grid-template-columns:repeat(4,1fr);grid-auto-rows:30px;gap:6px;";
             for (const b of PANEL_BUTTONS) {
                 const btn = document.createElement("button");
                 btn.textContent = b.label;
@@ -1560,20 +2141,50 @@ app.registerExtension({
                     "background:#3a3a3a;", "color:#eee;", "font-size:12px;",
                     "cursor:pointer;", "white-space:nowrap;", "overflow:hidden;", "text-overflow:ellipsis;",
                 ].join("");
+                if (b.widget === "btn_align") { btn.dataset.alignBtn = "1"; self.__btnAlign = btn; }
                 btn.addEventListener("mousedown", (e) => e.stopPropagation());
-                btn.addEventListener("mouseenter", () => { btn.style.background = "#4a4a4a"; });
-                btn.addEventListener("mouseleave", () => { btn.style.background = "#3a3a3a"; });
+                btn.addEventListener("mouseenter", () => { if (btn.dataset.alignBtn) self.__alignBtnBg?.(true); else btn.style.background = "#4a4a4a"; });
+                btn.addEventListener("mouseleave", () => { if (btn.dataset.alignBtn) self.__alignBtnBg?.(false); else btn.style.background = "#3a3a3a"; });
                 btn.addEventListener("click", () => {
                     if (b.panel === "prompt_elements") { showPromptElements(self); return; }
-                    if (b.panel === "coming_soon") { notify("🚧 该功能敬请期待...", "success"); return; }
+                    if (b.panel === "align") { toggleAlignPrompt(self); return; }
                     openModal(self, b.panel);
                 });
                 btnGrid.appendChild(btn);
             }
             container.appendChild(btnGrid);
 
-            // 提示词：内部编辑窗口（DOM 富文本 @ 着色）+ 外部提示词端口（prompt_input 只读，连线后替代）
+            // 生成信息状态行（实时显示，纯只读；值用绿色高亮；参数保存后自动同步）
+            const _jzlValColor = "#9fd6a4";  // 结果值高亮色（区别于标签）
+            const infoRow = el("div", "font-size:11px;color:#c9a86a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:14px;", "");
+            infoRow.title = "当前生成配置（LLM语言/后端/增强 + 一采步数/二采/采样种子），只读显示";
+            infoRow.addEventListener("mousedown", (e) => e.stopPropagation());
+            container.appendChild(infoRow);
+            const _jzlVal = (x) => `<span style="color:${_jzlValColor}">${x}</span>`;
+            const updateInfo = () => {
+                try {
+                    const msW = (self.widgets || []).find((x) => x.name === "manager_settings");
+                    let s = {};
+                    if (msW) { try { s = JSON.parse(readWidgetValue(msW) || "{}"); } catch (_) {} }
+                    const enh = s.enhance || {};
+                    const sd = s.sample_decode || {};
+                    const sec = sd.second || {};
+                    const lang = String(enh.prompt_lang || "中文 [ZH]");
+                    const langShort = lang.includes("EN") ? "英文[EN]" : "中文[ZH]";
+                    const mode = String(enh.llm_backend || "").includes("api") ? "API" : "本地";
+                    const enhOn = enh.enabled ? "开启" : "关闭";
+                    const steps = sd.steps ?? 4;
+                    const secOn = sec.enabled ? "开启" : "关闭";
+                    const seed = sd.seed ?? 0;
+                    infoRow.innerHTML = `LLM语言：${_jzlVal(langShort)} 丨 LLM模式：${_jzlVal(mode)} 丨 文本增强：${_jzlVal(enhOn)} 丨 一采步数：${_jzlVal(steps)} 丨 二采功能：${_jzlVal(secOn)} 丨 随机种：${_jzlVal(seed)}`;
+                } catch (_) {}
+            };
+            self.__jzlUpdateInfo = updateInfo;  // 设置面板保存后由 saveManager 触发刷新
+
+            // 提示词：内部编辑窗口（DOM 富文本 @ 着色），唯一提示词来源（外部提示词端口已删除）
             const promptLabel = el("div", "font-size:12px;color:#bbb;", "📝 提示词（用 @ 引用素材）");
+            const alignStatus = el("span", "font-size:11px;margin-left:8px;", "");
+            promptLabel.appendChild(alignStatus);
             container.appendChild(promptLabel);
             const promptBox = document.createElement("div");
             promptBox.contentEditable = "true";
@@ -1584,7 +2195,31 @@ app.registerExtension({
             promptBox.addEventListener("mousedown", (e) => e.stopPropagation());
             container.appendChild(promptBox);
             self.__promptBox = promptBox;
-            setupInternalPrompt(self, promptBox, piWidget, ipWidget);
+            promptBox.__node = self;
+            setupInternalPrompt(self, promptBox, ipWidget);
+
+            // 参考元素切换状态（纯文本/显示引用）：默认「纯文本」（关闭）；只由「🎯 参考元素切换」按钮手动切换，
+            // 资产变化（新增/修改素材）时保持当前模式、不自动切换。
+            self.__jzlAlignMode = "text";
+            const alignBtnBg = (hover) => {
+                const b = self.__btnAlign;
+                if (!b) return;
+                const ref = self.__jzlAlignMode !== "text";
+                b.style.background = ref ? (hover ? "#e8930c" : "#d97706") : (hover ? "#4a4a4a" : "#3a3a3a");
+                b.style.borderColor = ref ? "#f59e0b" : "#5b9bd5";
+            };
+            const updateAlignStatus = () => {
+                if (alignStatus) {
+                    const ref = self.__jzlAlignMode !== "text";
+                    alignStatus.textContent = `参考元素：${ref ? "显示引用" : "纯文本"}`;
+                    alignStatus.style.color = ref ? "#5ecf8a" : "#bbb";
+                    alignStatus.title = "由「🎯 参考元素切换」手动控制；已随工作流保存，刷新不丢失";
+                }
+                alignBtnBg(false);
+            };
+            self.__updateAlignStatus = updateAlignStatus;
+            self.__alignBtnBg = alignBtnBg;
+            updateAlignStatus();
 
             // Bug 1 修复：V3 的 migrateWidgetsValues 在加载时会按 schema 重排 widgets_values，
             // 但 addDOMWidget 生成的 jzl_manager 混在 widgets 数组里（schema 无此项）导致索引错位，
@@ -1616,34 +2251,23 @@ app.registerExtension({
                         if (ipWidget) setWidgetValue(ipWidget, String(rawIP));
                     }
                 }
+                // configure 可能重建端口 → 兜底清理幽灵接口（内部存储字段无端口）
+                setTimeout(killGhost, 0);
                 return r;
             };
 
-            // 端口顺序：外部提示词（prompt_input）小圆点与 clip 等端口并列，移到音频VAE下方
-            const reorderInputs = () => {
-                const ins = self.inputs;
-                if (!ins) return;
-                const pi = ins.findIndex((i) => i.name === "prompt_input");
-                const av = ins.findIndex((i) => i.name === "audio_vae");
-                if (pi < 0 || av < 0 || pi === av + 1) return;
-                const item = ins.splice(pi, 1)[0];
-                ins.splice(av + 1, 0, item);
-                ins.forEach((i, k) => { i.slot = k; });
-                self.setDirtyCanvas?.(true, true);
-            };
-            setTimeout(reorderInputs, 0);
-
-            // 清理 internal_prompt 的幽灵连线 + 强制无 socket（socketless 内部存储接口不应被接线；
-            // 旧工作流残留连线（如「字符串A」→internal_prompt）会渲染幽灵接口/幽灵显示栏）。
+            // 清理内部存储字段的幽灵接口（socketless 内部字段不应渲染端口；旧工作流残留连线也会渲染幽灵口）。
+            // 覆盖：internal_prompt / prompt_input(旧) / display_info / manager_settings，widget 值保留供 execute 取值。
             // 多次重试覆盖工作流加载时序（链接在节点 configure 之后才连上）。
             const killGhost = () => {
                 try {
-                    const ipIn = (self.inputs || []).find((i) => i.name === "internal_prompt");
-                    if (ipIn) {
+                    for (const nm of ["internal_prompt", "prompt_input", "display_info", "manager_settings"]) {
+                        const inp = (self.inputs || []).find((i) => i.name === nm);
+                        if (!inp) continue;
                         // 1. 断开残留连线（旧工作流曾把「字符串A」接到 internal_prompt）
-                        if (ipIn.link != null) {
-                            const linkId = ipIn.link;
-                            ipIn.link = null;
+                        if (inp.link != null) {
+                            const linkId = inp.link;
+                            inp.link = null;
                             const g = self.graph;
                             if (g && g.links && g.links[linkId]) {
                                 const link = g.links[linkId];
@@ -1655,18 +2279,19 @@ app.registerExtension({
                                 }
                                 delete g.links[linkId];
                             }
-                            console.log("[JZL-管理器] 已清理 internal_prompt 幽灵连线");
+                            console.log(`[JZL-管理器] 已清理 ${nm} 幽灵连线`);
                         }
-                        // 2. 彻底移除端口（internal_prompt 是内部存储字段，无端口；widget 值保留供 execute 取值）
-                        const idx = self.inputs.indexOf(ipIn);
+                        // 2. 彻底移除端口（内部存储字段，无端口；widget 值保留供 execute 取值）
+                        const idx = self.inputs.indexOf(inp);
                         if (idx >= 0) {
                             self.inputs.splice(idx, 1);
                             (self.inputs || []).forEach((i, k) => { i.slot = k; });
                         }
-                        self.setDirtyCanvas?.(true, true);
                     }
+                    self.setDirtyCanvas?.(true, true);
                 } catch (_) {}
             };
+            self.__jzlKillGhost = killGhost;
             [0, 150, 500, 1200].forEach((d) => setTimeout(killGhost, d));
 
             // 资产显示窗（缩略图墙，点击插入 @引用；自动换行，多行时节点同步增高）
@@ -1675,14 +2300,20 @@ app.registerExtension({
             const resizeNodeForContent = () => {
                 requestAnimationFrame(() => {
                     try {
-                        const jy = (self.widgets || []).find((w) => w.name === "jzl_manager")?.y || 200;
-                        const assetsH = windowBox.offsetHeight || 30;
-                        const btnRows = Math.ceil(PANEL_BUTTONS.length / 3);
-                        const minDom = btnRows * 36 + 8 + 64 + 22 + assetsH + 18;  // 按钮N行 + gap + 提示词min + 资产窗标题 + padding
-                        const need = jy + minDom;
+                        // scrollHeight 取完整内容高度（含多行），避免 overflow 把多行素材吞掉
+                        const assetsH = windowBox.scrollHeight || windowBox.offsetHeight || 30;
+                        const btnRows = Math.ceil(PANEL_BUTTONS.length / 4);
+                        const minDom = btnRows * 40 + 10 + 16 + 72 + 22 + assetsH + 20;  // 按钮N行 + gap + 信息行 + 提示词min + 资产窗标题 + padding
+                        const y = (self.widgets || []).find((w) => w.name === "jzl_manager")?.y;
+                        const need = (Number.isFinite(y) ? y : 220) + minDom;
                         if (self.size && need > (self.size[1] || 0) + 1) {
                             self.setSize([self.size[0], need]);
                             self.setDirtyCanvas?.(true, true);
+                            // 节点增高后 DOM 重排延迟 → 二次增高确保多行素材全部可见
+                            setTimeout(() => {
+                                self.setSize?.([self.size[0], need]);
+                                self.setDirtyCanvas?.(true, true);
+                            }, 80);
                         }
                     } catch (_) {}
                 });
@@ -1694,11 +2325,17 @@ app.registerExtension({
             // 缓存资产名并渲染资产显示窗；内部提示词重新渲染成着色 token 并同步到 internal_prompt
             const refreshAssets = () => {
                 renderAssetWindow(windowBox, self.__promptBox, self);
-                renderPromptFromText(self.__promptBox, getPromptText(self.__promptBox), self);
-                if (ipWidget) setWidgetValue(ipWidget, getPromptText(self.__promptBox));
+                // 用 internal_prompt 持久值作为来源重渲染（配置恢复晚于 loadManager 时也能正确着色，修复刷新后无缩略图）
+                const ipVal = ipWidget ? readWidgetValue(ipWidget) : "";
+                // 仅在「显示引用」模式才重新着色对齐；「纯文本」模式保持纯文本——素材变化不自动切换模式
+                if (self.__jzlAlignMode !== "text") {
+                    renderPromptFromText(self.__promptBox, ipVal || getPromptText(self.__promptBox), self);
+                    if (ipWidget) setWidgetValue(ipWidget, getPromptText(self.__promptBox));
+                }
+                updateAlignStatus();
             };
 
-            // 分辨率/帧数只读显示：监听原生参数 widget（画幅/MP/时长）变化后联动刷新
+            // 生成详情只读显示：监听原生参数 widget（画幅/MP/时长/段数）变化后联动刷新
             const AR_MAP = {
                 "1:1 (Square)": [1, 1], "2:3 (Portrait Photo)": [2, 3], "3:2 (Photo)": [3, 2],
                 "3:4 (Portrait Standard)": [3, 4], "4:5 (Portrait Tall)": [4, 5], "4:3 (Standard)": [4, 3],
@@ -1713,6 +2350,7 @@ app.registerExtension({
                 const ar = gv("aspect_ratio") || "16:9 (Widescreen)";
                 const mp = parseFloat(gv("megapixels")) || 1.0;
                 const dur = parseInt(gv("duration"), 10) || 8;
+                const count = parseInt(gv("video_count"), 10) || 6;
                 const [wr, hr] = AR_MAP[ar] || [16, 9];
                 const total = mp * 1024 * 1024;
                 const scale = Math.sqrt(total / (wr * hr));
@@ -1721,7 +2359,7 @@ app.registerExtension({
                 const base = Math.max(5, Math.round(dur * 24));
                 const frames = base + (5 - (base % 17)) % 17;
                 const disp = (self.widgets || []).find((x) => x.name === "display_info");
-                if (disp) setWidgetValue(disp, `${W}x${H} · ${frames}帧`);
+                if (disp) setWidgetValue(disp, `分辨率：${W}x${H}丨每段帧数：${frames}丨共计段数：${count}丨总帧数：${frames * count}丨总时长：${dur * count}秒`);
             };
             const watchChange = (nm) => {
                 const w = (self.widgets || []).find((x) => x.name === nm);
@@ -1733,12 +2371,15 @@ app.registerExtension({
                     return r;
                 };
             };
-            ["aspect_ratio", "megapixels", "duration"].forEach(watchChange);
+            ["aspect_ratio", "megapixels", "duration", "video_count"].forEach(watchChange);
 
             loadManager(self).then((data) => {
                 cacheAssets(self, data.settings);
+                // 恢复「参考元素切换」保存的状态（显示引用/纯文本），刷新不丢失
+                self.__jzlAlignMode = (data?.settings && data.settings.align_mode === "text") ? "text" : "ref";
                 updateDisplay();
                 refreshAssets();
+                updateInfo();
             }).catch(() => {});
             self.__jzlRefresh = refreshAssets;  // 弹窗保存资产后实时刷新本节点
 
@@ -1747,22 +2388,47 @@ app.registerExtension({
             self.onExecuted = function (message) {
                 const r = prevOnExecuted?.apply(this, arguments);
                 try {
-                    const su = message?.seed_update;
-                    if (su && typeof su.seed === "number") {
-                        const msW = (self.widgets || []).find((x) => x.name === "manager_settings");
-                        if (msW) {
-                            const raw = readWidgetValue(msW);
-                            let s = {};
-                            try { s = raw ? JSON.parse(raw) : {}; } catch (_) {}
-                            if (!s.enhance) s.enhance = {};
-                            s.enhance.seed = su.seed;
-                            s.enhance.seed_control = su.seed_control || s.enhance.seed_control || "randomize";
-                            setWidgetValue(msW, JSON.stringify(s));
-                        }
+                    const msW = (self.widgets || []).find((x) => x.name === "manager_settings");
+                    // ComfyUI V3 会把 execute 返回的 ui 每个值打包成数组（见 execution.py
+                    // get_output_from_returns: ui = {k: [...]}），必须解包取 [0]。
+                    const unp = (v) => (Array.isArray(v) ? v[0] : v);
+                    // 后端返回的业务错误（如未填故事名称）→ 弹错误提示
+                    const merr = unp(message?.manager_error);
+                    if (merr) { try { notify(`❌ ${merr}`, "error"); } catch (_) {} }
+                    const su = unp(message?.seed_update) || {};
+                    if (typeof su.seed === "number" && msW) {
+                        const raw = readWidgetValue(msW);
+                        let s = {};
+                        try { s = raw ? JSON.parse(raw) : {}; } catch (_) {}
+                        if (!s.enhance) s.enhance = {};
+                        s.enhance.seed = su.seed;
+                        s.enhance.seed_control = su.seed_control || s.enhance.seed_control || "randomize";
+                        setWidgetValue(msW, JSON.stringify(s));
+                        updateInfo();
+                    }
+                    // 采样种子回写（randomize 一采实际种子）→ 面板刷新后显示真实种子
+                    const sus = unp(message?.seed_update_sample) || {};
+                    if (typeof sus.seed === "number" && msW) {
+                        const raw = readWidgetValue(msW);
+                        let s = {};
+                        try { s = raw ? JSON.parse(raw) : {}; } catch (_) {}
+                        if (!s.sample_decode) s.sample_decode = {};
+                        s.sample_decode.seed = sus.seed;
+                        if (sus.seed_control) s.sample_decode.seed_mode = sus.seed_control;
+                        setWidgetValue(msW, JSON.stringify(s));
+                        updateInfo();
                     }
                 } catch (_) {}
                 return r;
             };
+
+            // 节点最小宽度 600（防止缩得太窄；litegraph 用 min_width，兼容两种属性并强制初始宽度）
+            self.min_width = 600;
+            self.minWidth = 600;
+            if (!self.size || !Number.isFinite(self.size[0]) || self.size[0] < 600) {
+                const _h0 = Number.isFinite(self.size?.[1]) ? self.size[1] : 300;
+                self.setSize?.([600, _h0]);
+            }
 
             // 3. addDOMWidget：不 unshift；固定高度（按钮区 + 提示词 + 资产窗）
             const widget = self.addDOMWidget?.("jzl_manager", "JZL_MANAGER", container, {
@@ -1779,10 +2445,21 @@ app.registerExtension({
             }
 
             // 节点 resize 时触发重绘，让 DOM widget（输入框）跟随高度
+            let _resizeTimer = null;
             const prevOnResize = self.onResize;
             self.onResize = function (...args) {
                 const rr = prevOnResize?.apply(this, args);
-                try { self.setDirtyCanvas?.(true, true); } catch (_) {}
+                try {
+                    self.setDirtyCanvas?.(true, true);
+                    // 节点宽度调整期间会频繁触发 → 防抖：调整结束后 200ms，按「最终宽度」重新渲染资产窗
+                    // 并重算节点高度，保证换行后的多行素材全部显示、节点自动增高（修复调窄后第三行被吞）
+                    clearTimeout(_resizeTimer);
+                    _resizeTimer = setTimeout(() => {
+                        renderAssetWindow(windowBox, self.__promptBox, self);  // 内部会调 windowBox.__onResize 重算高度
+                        self.__updateAlignStatus?.();
+                        self.setDirtyCanvas?.(true, true);
+                    }, 200);
+                } catch (_) {}
                 return rr;
             };
 
@@ -1819,7 +2496,8 @@ app.registerExtension({
                 box.innerText = v;
                 renderPromptFromText(box, getPromptText(box), self);
             }
-            if (typeof self.checkPromptLink === "function") self.checkPromptLink();
+            // 幽灵接口兜底：configure 后清理内部存储字段端口
+            try { self.__jzlKillGhost?.(); } catch (_) {}
             return r;
         };
     },

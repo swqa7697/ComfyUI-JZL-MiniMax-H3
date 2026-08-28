@@ -16,9 +16,11 @@ import json
 import glob
 import math
 import time
+import wave
 import shutil
 import subprocess
 import tempfile
+import logging
 
 import torch
 import torchaudio
@@ -42,6 +44,24 @@ from .nodes import (
     temporal_shape,
     align_frame_count,
 )
+
+# ── 日志静音：压制 ComfyUI 模型加载/显存管理的重复 INFO 噪音 ────────
+# （如「Model X prepared for dynamic VRAM loading…」「Requested to load X」「0 models unloaded」），
+# 它们来自 comfy.model_patcher / comfy.model_management 的 logging，与 JZL 自己的 print 日志无关，
+# 只留 WARNING/ERROR 与 [JZL-*] 日志，避免运行期刷屏。
+class _QuietModelLoad(logging.Filter):
+    _NOISY = ("prepared for dynamic VRAM loading", "Requested to load", "0 models unloaded")
+
+    def filter(self, record):
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        return not any(n in msg for n in self._NOISY)
+
+
+if not any(isinstance(f, _QuietModelLoad) for f in logging.getLogger().filters):
+    logging.getLogger().addFilter(_QuietModelLoad())
 
 # ── 全局资产池（无线传输核心）──────────────────────────────
 # key = 资产名（如「图片1角色孙悟空」），value = {"kind": "image"|"audio"|"video", "data": tensor}
@@ -76,7 +96,18 @@ ASPECT_RATIOS = {
 
 
 def _story_style_options():
-    """故事风格选项列表（供 schema combo 使用）。"""
+    """故事风格选项列表（供 schema combo 使用）。
+
+    优先读 sheding.story_styles（20 个全量风格，含外部 md 长文，与官方 ScriptProcessor 完全一致）；
+    缺失时回退 presets.script（8 个精简 fallback）。保证管理器风格列表与剧本处理器一致、不缺斤少两。
+    """
+    try:
+        from .sheding.story_styles import STORY_STYLES
+        keys = list(STORY_STYLES.keys())
+        if keys:
+            return keys
+    except Exception:
+        pass
     try:
         from .presets.script import STORY_STYLES
         keys = list(STORY_STYLES.keys())
@@ -88,11 +119,23 @@ def _story_style_options():
 
 
 # ── ⑤采样解码 / 偏好设置 原生 widget 选项 ────────────────
-SAMPLER_OPTIONS = ["res_multistep", "euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde",
-                   "dpmpp_sde", "ddim", "uni_pc", "lcm", "gradient_estimation"]
-SCHEDULER_OPTIONS = ["simple", "normal", "karras", "exponential", "sgm_uniform", "beta", "ddim_uniform"]
-SEED_MODE_OPTIONS = ["randomize", "fixed", "increment"]
-DECODE_VIDEO_OPTIONS = ["XB-BOX - VAE解码（原版优化）", "VAE解码"]
+SAMPLER_OPTIONS = [
+    "res_multistep", "res_multistep_cfg_pp", "res_multistep_ancestral", "res_multistep_ancestral_cfg_pp",
+    "euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp",
+    "heun", "heunpp2", "exp_heun_2_x0", "exp_heun_2_x0_sde",
+    "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast", "dpm_adaptive",
+    "dpmpp_2s_ancestral", "dpmpp_2s_ancestral_cfg_pp", "dpmpp_sde", "dpmpp_sde_gpu",
+    "dpmpp_2m", "dpmpp_2m_cfg_pp", "dpmpp_2m_sde", "dpmpp_2m_sde_gpu",
+    "dpmpp_2m_sde_heun", "dpmpp_2m_sde_heun_gpu", "dpmpp_3m_sde", "dpmpp_3m_sde_gpu",
+    "ddpm", "lcm", "ipndm", "ipndm_v", "deis",
+    "gradient_estimation", "gradient_estimation_cfg_pp", "er_sde", "seeds_2", "seeds_3",
+    "sa_solver", "sa_solver_pece", "ddim", "uni_pc", "uni_pc_bh2",
+]
+SCHEDULER_OPTIONS = ["simple", "sgm_uniform", "karras", "exponential", "ddim_uniform", "beta", "normal", "linear_quadratic", "kl_optimal"]
+SEED_MODE_OPTIONS = ["randomize", "fixed", "increment", "decrement"]
+# 解码：固定 XB-BOX 优化版（=原版 + 显存清理）；cleanup 两级（对齐 1146 的「卸载显存模型」）
+DECODE_VIDEO_OPTIONS = ["XB-BOX - VAE解码（原版优化）"]
+DECODE_CLEANUP_OPTIONS = ["卸载显存模型", "不做清理"]
 DECODE_AUDIO_OPTIONS = ["VAE解码（音频）"]
 
 
@@ -190,9 +233,9 @@ MANAGER_DEFAULTS = {
         },
         "api": {
             "provider": "OpenAI 兼容 (OpenAI/DeepSeek/Qwen/GLM/Kimi/Ollama/vLLM/LM Studio)",
-            "model": "",
+            "model": "deepseek-v4-flash",
             "api_key": "",
-            "base_url": "",
+            "base_url": "https://api.deepseek.com/v1",
             "temperature": 0.6,
             "max_tokens": 8192,
             "thinking": "disabled",
@@ -228,9 +271,22 @@ MANAGER_DEFAULTS = {
         "scheduler": "simple",
         "steps": 4,
         "cfg": 1.0,
+        "seed": 0,
         "seed_mode": "randomize",
         "decode_video": "XB-BOX - VAE解码（原版优化）",
-        "decode_audio": "VAE解码（音频）",
+        "decode_cleanup": "卸载显存模型",
+        "second": {
+            "enabled": False,
+            "upscaler_model": "minimax_h3_latent_upscaler_3d_fp32.pth",
+            "device": "cuda",
+            "precision": "fp32",
+            "sampler": "euler",
+            "scheduler": "simple",
+            "steps": 3,
+            "denoise": 0.3,
+            "sigmas_mode": "scheduler",
+            "custom_sigmas": "0.8500, 0.6316, 0.3158, 0.0000",
+        },
     },
 }
 
@@ -274,6 +330,11 @@ def _merge_manager_settings(data):
             llm["n_ctx"] = int(legacy.get("n_ctx"))
         if legacy.get("vram_limit") is not None:
             llm["vram_limit"] = int(legacy.get("vram_limit"))
+    # 旧配置兼容：sample_decode.decode_video → decode_cleanup（原版 VAEDecode = 不做清理）
+    raw_sd = (data or {}).get("sample_decode") or {}
+    if "decode_video" in raw_sd and not raw_sd.get("decode_cleanup"):
+        merged["sample_decode"]["decode_cleanup"] = (
+            "不做清理" if (raw_sd.get("decode_video") or "") == "VAE解码" else "卸载显存模型")
     return merged
 
 
@@ -317,23 +378,6 @@ def _slot_name(slot):
     return str(slot).strip()
 
 
-def _parse_slots_local(raw):
-    """解析调度指令为 slots 数组（兼容 str JSON / list / dict）。"""
-    for _ in range(3):
-        if isinstance(raw, str):
-            try:
-                raw = json.loads(raw)
-            except Exception:
-                return []
-        elif isinstance(raw, (list, tuple)):
-            return raw if raw else []
-        elif isinstance(raw, dict):
-            return raw.get("slots", [])
-        else:
-            return []
-    return []
-
-
 def _parse_four_in_one(content):
     """解析分段四段格式，返回 (h3_prompt, scene, video, audio)。复刻分段处理中心。"""
     h3, scene, video, audio = "", "{}", "{}", "{}"
@@ -353,22 +397,22 @@ def _parse_four_in_one(content):
 def _collect_slots(raw, kind, limit):
     """按调度指令从全局资产池取 kind 类资产，返回 list[tensor]（≤limit）。
 
-    槽位名（如「场景A」）先经 JZL_SLOT_MAP 解析为资产名（如「图片2 场景 森林」），
-    再与资产池模糊匹配；槽位本身已是资产名时直接匹配。
+    与「场景/视频/音频调度」节点共用同一套规则（story_nodes 的 normalize_slots /
+    _parse_slots / _get_from_pool / _match_name）：槽位名先经 JZL_SLOT_MAP 精确映射为
+    资产名，再走共享池匹配（精确→模糊），保证管理器与真实调度节点行为一致。
     """
+    from .story_nodes import _parse_slots, _get_from_pool, normalize_slots
+    try:
+        normalized = normalize_slots(raw) if isinstance(raw, str) else raw
+    except Exception:
+        normalized = raw
     out = []
-    for slot in _parse_slots_local(raw):
+    for slot in _parse_slots(normalized):
         if len(out) >= limit:
             break
         name = _slot_name(slot)
         asset_name = JZL_SLOT_MAP.get(name, name)
-        data = None
-        for key, item in JZL_ASSET_POOL.items():
-            if item.get("kind") != kind:
-                continue
-            if key == asset_name or _match_asset(asset_name, key):
-                data = item.get("data")
-                break
+        data = _get_from_pool(asset_name, kind=kind)
         if data is not None:
             out.append(data)
     return out
@@ -419,34 +463,6 @@ def _get_asset_by_name(name):
         if _match_asset(name, key):
             return item.get("kind"), item.get("data")
     return None, None
-
-
-def _encode_image_to_video(clip, vae, prompt, width, height, length, first_frame=None, last_frame=None):
-    """复刻官方 MiniMaxH3ImageToVideo 编码（t2va / i2va / l2va / fl2va）。"""
-    latent, frame_count = _empty_av_latent(width, height, length)
-
-    images = []
-    keyframes = []
-    if first_frame is not None:
-        img = _resize(first_frame[:1], width, height, "disabled")
-        images.append(img)
-        keyframes.append({"resolved_frame_index": 0, "image": img})
-    if last_frame is not None:
-        img = _resize(last_frame[:1], width, height, "center")
-        images.append(img)
-        keyframes.append({"resolved_frame_index": frame_count - 1, "image": img})
-
-    tokens = clip.tokenize(prompt, images=images)
-    cond = clip.encode_from_tokens_scheduled(tokens)
-
-    if keyframes:
-        for kf in keyframes:
-            kf["latent"] = vae.encode(kf.pop("image"))
-        cond = node_helpers.conditioning_set_values(cond, {
-            "minimax_keyframes": keyframes,
-            "minimax_frame_count": frame_count,
-        })
-    return cond, latent
 
 
 def _encode_ref_audio(audio_vae, audio):
@@ -534,6 +550,7 @@ def _sample_av(model, positive, latent, sample_decode, seed):
     """MiniMax H3 采样：NestedTensor(视频+音频) → 去噪 latent。"""
     steps = int(sample_decode.get("steps", 4) or 4)
     cfg = float(sample_decode.get("cfg", 1.0) or 1.0)
+    denoise = float(sample_decode.get("denoise", 1.0) or 1.0)
     sampler_name = sample_decode.get("sampler", "res_multistep") or "res_multistep"
     scheduler = sample_decode.get("scheduler", "simple") or "simple"
 
@@ -544,13 +561,187 @@ def _sample_av(model, positive, latent, sample_decode, seed):
     samples = comfy.sample.sample(
         model, noise, steps, cfg, sampler_name, scheduler,
         positive, negative, latent_image,
-        denoise=1.0, disable_pbar=disable_pbar, seed=seed,
+        denoise=denoise, disable_pbar=disable_pbar, seed=seed,
     )
     return samples
 
 
-def _decode_av(vae, audio_vae, samples):
-    """NestedTensor latent → (IMAGE [T,H,W,C], AUDIO dict|None)。"""
+def _sample_av_custom_sigmas(model, positive, latent, sigmas_text, sampler_name, seed, cfg=1.0):
+    """自定义西格玛二采：按 1190 工作流 ManualSigmas → SamplerCustomAdvanced 方式采样。
+
+    直接把 sigmas 序列（如 "0.8500, 0.6316, 0.3158, 0.0000"）喂给采样器，不走调度器；
+    sampler 用二采「K采样器」，cfg 沿用一采，种子与一采共享。
+    """
+    import re as _re
+    latent_image = latent["samples"]
+    negative = []  # 空 negative（cfg=1 时不参与）
+    values = [float(x) for x in _re.findall(r"[-+]?(?:\d*\.*\d+)", sigmas_text or "")]
+    if len(values) < 2:
+        raise RuntimeError("自定义 Sigmas 无效：请填写形如 0.8500, 0.6316, 0.3158, 0.0000（至少 2 个，末位通常为 0）")
+    sigmas = torch.FloatTensor(values)
+    noise = comfy.sample.prepare_noise(latent_image, seed, None)
+    sampler = comfy.samplers.sampler_object(sampler_name or "euler")
+    disable_pbar = not comfy.utils.PROGRESS_BAR_ENABLED
+    samples = comfy.sample.sample_custom(
+        model, noise, float(cfg), sampler, sigmas, positive, negative, latent_image,
+        disable_pbar=disable_pbar, seed=seed,
+    )
+    return samples
+
+
+def _import_upscaler_3d():
+    """动态导入 MinimaxH3LatentUpscaler3D（兼容不同安装目录名）。
+
+    云机与本地 custom node 目录名可能不一致（例如带连字符的目录无法用 import 语句导入），
+    依次尝试：标准模块名 → 常见变体 → 扫描 custom_nodes 目录按文件路径加载。
+    """
+    import importlib.util
+    import sys as _sys
+    # 1) 常见模块名
+    for _modname in (
+        "Comfyui_Minimax_h3_latent_Upscaler.nodes.minimax_h3_latent_upscaler_3d",
+        "ComfyUI_Minimax_h3_latent_Upscaler.nodes.minimax_h3_latent_upscaler_3d",
+    ):
+        try:
+            _m = importlib.import_module(_modname)
+            if hasattr(_m, "MinimaxH3LatentUpscaler3D"):
+                return getattr(_m, "MinimaxH3LatentUpscaler3D")
+        except Exception:
+            pass
+    # 2) 扫描 custom_nodes 目录，找到 minimax_h3_latent_upscaler_3d.py 按文件加载
+    try:
+        _base = os.path.abspath(getattr(folder_paths, "base_path", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        _cn = os.path.join(_base, "custom_nodes")
+        _found = None
+        if os.path.isdir(_cn):
+            for _root, _dirs, _files in os.walk(_cn):
+                if "minimax_h3_latent_upscaler_3d.py" in _files:
+                    _found = os.path.join(_root, "minimax_h3_latent_upscaler_3d.py")
+                    break
+        if _found:
+            _pdir = os.path.dirname(_found)
+            if _pdir not in _sys.path:
+                _sys.path.insert(0, _pdir)
+            try:
+                _mod = importlib.import_module("minimax_h3_latent_upscaler_3d")
+            except Exception:
+                _spec = importlib.util.spec_from_file_location("_jzl_upscaler_3d", _found)
+                _mod = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+            if hasattr(_mod, "MinimaxH3LatentUpscaler3D"):
+                return getattr(_mod, "MinimaxH3LatentUpscaler3D")
+    except Exception:
+        pass
+    raise RuntimeError("缺少「Minimax H3 Latent Upscaler (3D)」自定义节点（Comfyui_Minimax_h3_latent_Upscaler），请先在 custom_nodes 安装")
+
+
+def _run_second_sampling(model, positive, samples, sample_decode, second, upscale_scale, seed):
+    """复刻 1180 二采链路：一采 latent → LTXV分离音视频 → 视频latent放大(MinimaxH3LatentUpscaler3D)
+    → LTXVConcatAVLatent 合并 → 按二采参数再次采样。
+
+    ref2va 的一采/二采共用同一个 positive：参考素材是身份参考，不受输出分辨率绑定；
+    只有 fl2va（首/尾帧 keyframe 按输出分辨率嵌入）才需要在放大分辨率重新编码 positive，
+    管理器始终 ref2va，直接复用一采的 positive。种子与一采共享，cfg 沿用一采。
+    """
+    try:
+        from comfy_extras.nodes_lt import LTXVSeparateAVLatent, LTXVConcatAVLatent
+    except Exception as e:
+        raise RuntimeError(f"缺少官方节点 LTXVSeparateAVLatent/LTXVConcatAVLatent（comfy-core 自带，请升级 ComfyUI）：{e}")
+    MinimaxH3LatentUpscaler3D = _import_upscaler_3d()
+
+    # 1) 分离音视频潜空间
+    sep = LTXVSeparateAVLatent.execute({"samples": samples})
+    video_latent, audio_latent = sep.args[0], sep.args[1]
+
+    # 2) 视频 latent 放大（scale by multiplier，倍数=二采放大；对齐 32）
+    up = MinimaxH3LatentUpscaler3D.execute(
+        latent=video_latent,
+        model_name=second.get("upscaler_model") or "minimax_h3_latent_upscaler_3d_fp32.pth",
+        mode={"mode": "scale by multiplier", "scale": float(upscale_scale or 1.0)},
+        align=32,
+        enable_chunking=bool(second.get("enable_chunking", True)),
+        device=second.get("device") or "cuda",
+        precision=second.get("precision") or "fp32",
+    )
+    up_latent = up.args[0]
+
+    # 3) 合并音视频潜空间
+    merged = LTXVConcatAVLatent.execute(up_latent, audio_latent).args[0]
+
+    # 4) 二次采样：与一采共用 positive（ref2va 参考不受输出分辨率绑定；种子与一采共享，cfg 沿用一采）
+    #    Sigmas 模式：scheduler=调度器+步数+降噪；custom=直接用自定义 sigmas 序列（对齐 1190 ManualSigmas→sample_custom）
+    cfg = float(sample_decode.get("cfg", 1.0) or 1.0)
+    if (second.get("sigmas_mode") or "scheduler") == "custom":
+        return _sample_av_custom_sigmas(
+            model, positive, merged,
+            second.get("custom_sigmas") or "0.8500, 0.6316, 0.3158, 0.0000",
+            second.get("sampler") or "euler", seed, cfg)
+    second_sd = dict(sample_decode or {})
+    second_sd["sampler"] = second.get("sampler") or "euler"
+    second_sd["scheduler"] = second.get("scheduler") or "simple"
+    second_sd["steps"] = int(second.get("steps", 3) or 3)
+    second_sd["denoise"] = float(second.get("denoise", 0.3) or 0.3)
+    return _sample_av(model, positive, merged, second_sd, seed)
+
+
+def _clean_cache():
+    """轻量显存清理：soft_empty_cache + empty_cache（不卸载模型）。
+
+    管理器在分段循环里每段解码前调用——若卸载模型会导致下一段重新加载（慢 + 重复刷屏
+    「prepared for dynamic VRAM loading」）；轻量清理既腾出缓存碎片又不打断模型驻留。
+    """
+    try:
+        import comfy.model_management as mm
+        mm.soft_empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception as e:
+        print(f"[JZL-管理器] 显存清理失败：{e}")
+
+
+def _cleanup_vram(level="卸载显存模型"):
+    """全量显存清理（复刻 XB-BOX VAE解码 的 L2：卸载显存模型），生成结束后统一调用。"""
+    if level != "卸载显存模型":
+        return
+    try:
+        import comfy.model_management as mm
+        mm.soft_empty_cache()
+        mm.unload_all_models()
+        mm.soft_empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        import gc
+        gc.collect()
+    except Exception as e:
+        print(f"[JZL-管理器] 显存清理失败：{e}")
+
+
+def _gpu_diag_hint():
+    """遇到 CUDA/ROCm 内核不匹配（no kernel image）时，附上 torch/CUDA/显卡诊断信息。"""
+    try:
+        import torch as _t
+        parts = [f"torch={_t.__version__} cuda={getattr(_t.version, 'cuda', None)}"]
+        try:
+            if _t.cuda.is_available():
+                parts.append(f"gpu={_t.cuda.get_device_name(0)} cap={_t.cuda.get_device_capability(0)}")
+            else:
+                parts.append("gpu=cuda不可用")
+        except Exception:
+            pass
+        return " | ".join(parts)
+    except Exception:
+        return ""
+
+
+def _decode_av(vae, audio_vae, samples, sample_decode=None):
+    """NestedTensor latent → (IMAGE [T,H,W,C], AUDIO dict|None)。
+
+    解码前做轻量缓存清理（不卸载模型，避免分段间重载导致日志刷屏/变慢）；
+    「卸载显存模型」的全量卸载在生成结束后统一执行。日志风格对齐 XB-BOX VAE解码。
+    """
+    if (sample_decode or {}).get("decode_cleanup") == "卸载显存模型":
+        print("[JZL-管理器] 🧹 解码前清理（卸载显存模型）...")
+        _clean_cache()
     if getattr(samples, "is_nested", False):
         tensors = samples.tensors
         video_z = tensors[0]
@@ -567,7 +758,136 @@ def _decode_av(vae, audio_vae, samples):
     if audio_z is not None:
         waveform = audio_vae.first_stage_model.decode(audio_z)  # [B, 2, L]
         audio = {"waveform": waveform, "sample_rate": getattr(audio_vae, "audio_sample_rate", 32000)}
+    print("[JZL-管理器] ✅ 解码完成（XB-BOX - VAE解码（原版优化））")
     return image, audio
+
+
+def _ffmpeg_bin():
+    """返回可用的 ffmpeg 可执行文件路径（优先 imageio_ffmpeg 自带的，回退 PATH 中的 ffmpeg）。"""
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return "ffmpeg"
+
+
+def _write_wav(waveform, sample_rate, path):
+    """torch 音频 [B,C,L] → 16bit PCM wav 文件（作为 ffmpeg 音频输入）。"""
+    w = waveform.detach().cpu()
+    if w.ndim == 3:
+        w = w[0]  # [C,L]
+    if w.ndim != 2:
+        raise ValueError(f"不支持的音频维度：{tuple(w.shape)}")
+    data = (w.float().clamp(-1.0, 1.0) * 32767.0).to(torch.int16)
+    frames = data.transpose(0, 1).contiguous().numpy()  # [L,C] 交错
+    with wave.open(path, "wb") as f:
+        f.setnchannels(int(data.shape[0]))
+        f.setsampwidth(2)
+        f.setframerate(int(sample_rate))
+        f.writeframes(frames.tobytes())
+
+
+def _safe_story_name(name):
+    """故事名 → 安全文件名片段（去除路径非法字符，空则用 story）。"""
+    s = re.sub(r'[\\/:*?"<>|]', "_", str(name or "")).strip()
+    return s or "story"
+
+
+def _next_counter(folder, prefix):
+    """扫描 folder 下 prefix 开头的 .mp4，返回下一个 5 位编号（max+1，至少 1）。"""
+    if not os.path.isdir(folder):
+        return 1
+    mx = 0
+    try:
+        for fn in os.listdir(folder):
+            if fn.startswith(prefix) and fn.endswith(".mp4"):
+                m = re.search(r"_(\d{5})\.mp4$", fn)
+                if m:
+                    mx = max(mx, int(m.group(1)))
+    except Exception:
+        pass
+    return mx + 1
+
+
+def _save_segment_mp4(image, audio, out_dir, index, story_name="story", counter=1, fps=VIDEO_FPS):
+    """把单段 (IMAGE [T,H,W,C] float 0-1, AUDIO dict|None) 用 ffmpeg 立即落盘 mp4。
+
+    文件名规则：{故事名}_分段{序号}_{5位编号}.mp4（编号按目录已有文件递增）。
+    返回保存的文件绝对路径；失败抛异常（由调用方捕获并记录日志）。
+    """
+    if image is None:
+        raise ValueError("图像为空，无法落盘")
+    img = image.detach().cpu().float().clamp(0.0, 1.0).mul(255.0).to(torch.uint8).numpy()
+    T, H, W, C = img.shape
+    if C >= 4:
+        img = img[:, :, :, :3]  # 只取 RGB（ffmpeg rgb24 需 3 通道）
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"{story_name}_分段{int(index)}_{int(counter):05d}.mp4")
+
+    ff = _ffmpeg_bin()
+    cmd = [ff, "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
+           "-s", f"{W}x{H}", "-r", str(fps), "-i", "-"]
+    tmp_wav = None
+    if audio is not None:
+        wf = audio.get("waveform")
+        if wf is not None:
+            sr = int(audio.get("sample_rate", 32000))
+            tmp_wav = os.path.join(tempfile.gettempdir(), f"_jzl_seg{int(index)}_{os.getpid()}.wav")
+            _write_wav(wf, sr, tmp_wav)
+            cmd += ["-i", tmp_wav, "-c:a", "aac", "-b:a", "192k"]
+    cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-movflags", "+faststart"]
+    if tmp_wav:
+        cmd += ["-shortest"]
+    cmd += [path]
+
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE)
+    try:
+        for i in range(T):
+            proc.stdin.write(img[i].tobytes())
+        proc.stdin.close()
+        _, err = proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg 落盘失败：{err.decode('utf-8', 'ignore')[-500:]}")
+    finally:
+        if tmp_wav and os.path.exists(tmp_wav):
+            try:
+                os.remove(tmp_wav)
+            except Exception:
+                pass
+    return path
+
+
+def _concat_escape(p):
+    """ffmpeg concat demuxer 的 Windows 路径写法：反斜杠→正斜杠（盘符冒号不转义，ffmpeg 对单字母盘符有特殊处理）。"""
+    return p.replace("\\", "/")
+
+
+def _merge_mp4_concat(paths, out_path):
+    """把多个 mp4 按顺序用 concat demuxer 无缝拼接（同编码参数，-c copy）。返回输出路径。"""
+    if not paths:
+        raise ValueError("没有可合并的分段文件")
+    ff = _ffmpeg_bin()
+    out_path = os.path.abspath(out_path)
+    out_dir = os.path.dirname(out_path)
+    os.makedirs(out_dir, exist_ok=True)
+    list_path = os.path.join(out_dir, f"_jzl_concat_{os.getpid()}_{int(time.time())}.txt")
+    try:
+        with open(list_path, "w", encoding="utf-8") as f:
+            for p in paths:
+                f.write(f"file '{_concat_escape(os.path.abspath(p))}'\n")
+        cmd = [ff, "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+               "-c", "copy", "-movflags", "+faststart", out_path]
+        proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg 合并失败：{proc.stderr.decode('utf-8', 'ignore')[-500:]}")
+        return out_path
+    finally:
+        if os.path.exists(list_path):
+            try:
+                os.remove(list_path)
+            except Exception:
+                pass
 
 
 def _concat_images(images):
@@ -622,6 +942,8 @@ def _resolve_seed(seed_mode, base_seed, index):
         return base_seed
     if seed_mode == "increment":
         return base_seed + index
+    if seed_mode == "decrement":
+        return base_seed - index
     # 0xffffffffffffffff(2^64-1) 超出 C int64 上界会溢出；用 int64 最大值 2^63-1
     return torch.randint(0, 0x7fffffffffffffff, (1,)).item()
 
@@ -629,6 +951,12 @@ def _resolve_seed(seed_mode, base_seed, index):
 # ── ③提示词：资产介绍 / 启用判断 / 偏好 / LLM 调用 ─────────────
 
 _IMAGE_SLOT_TYPES = ("角色", "场景", "道具", "分镜", "其他")
+
+# ref_intro 输出排序：类型顺序（角色→场景→道具→分镜→其他；视频/音频）→ 字母顺序
+_SLOT_TYPE_ORDER = {
+    "角色": 0, "场景": 1, "道具": 2, "分镜": 3, "其他": 4,
+    "视频": 0, "音频": 0,
+}
 
 
 def _asset_type_for_slot(kind, typ):
@@ -652,11 +980,12 @@ def _build_asset_intro(assets_cfg):
 
     返回 (ref_image_intro, ref_video_intro, ref_audio_intro, slot_to_asset)。
     槽位按类型独立从 A 编号（角色A/场景A/道具A/视频A/音频A…），
+    输出排序：类型顺序（角色→场景→道具→自定义→其他）→ 字母顺序（A/B/C…）。
     资产名 = 图片N 类型 名称（与 JZL_ASSET_POOL key 一致）。
     """
     slot_to_asset = {}
     counters = {}
-    out = {"image": [], "video": [], "audio": []}
+    entries = {"image": [], "video": [], "audio": []}
     for kind, key in (("image", "images"), ("video", "videos"), ("audio", "audios")):
         for i, item in enumerate(assets_cfg.get(key) or []):
             if not item.get("enabled", True):
@@ -682,16 +1011,230 @@ def _build_asset_intro(assets_cfg):
             slot_to_asset[slot] = asset_name
             desc = (item.get("description") or "").strip()
             # 槽位格式（官方解析）：角色A = 名称（描述）
+            text = f"{slot} = {name}"
             if desc:
-                out[kind].append(f"{slot} = {name}（{desc}）")
-            else:
-                out[kind].append(f"{slot} = {name}")
+                text += f"（{desc}）"
+            entries[kind].append((_SLOT_TYPE_ORDER.get(slot_type, 9), letter, text))
+    out = {}
+    for kind in ("image", "video", "audio"):
+        entries[kind].sort(key=lambda e: (e[0], e[1]))
+        out[kind] = [e[2] for e in entries[kind]]
     return (
         "\n".join(out["image"]),
         "\n".join(out["video"]),
         "\n".join(out["audio"]),
         slot_to_asset,
     )
+
+
+def _normalize_dispatch_slots(script_text, slot_to_asset):
+    """调度指令规范化：LLM 误把 slots 写成「素材名」（如 角色:兔子）时，用槽位映射反查纠正为「槽位名」（角色:角色A）。
+
+    官方设定词要求 slots 写「类型:槽位名」且严禁写素材名，但本地模型（如 Qwen3.5-9B）有时不严格遵循——
+    拆解模式里故事直接出现角色名时尤其容易照抄。这里是确定性的兜底，不依赖 LLM 自觉；
+    找不到映射的槽位原样保留，不影响正常输出。
+    """
+    if not script_text or not slot_to_asset:
+        return script_text
+    # 反向映射：素材名 → 槽位名（slot_to_asset 值为「图片N 类型 素材名」）
+    name_to_slot = {}
+    for slot, asset in slot_to_asset.items():
+        m = re.match(r'^(?:图片|视频|音频)\d+\s+[^\s]+\s+(.+)$', asset or "")
+        full = m.group(1).strip() if m else (asset or "").strip()
+        if full:
+            name_to_slot.setdefault(full, slot)
+            if " " in full:
+                name_to_slot.setdefault(full.split()[-1], slot)  # 短名兜底（如「兔子」）
+
+    def _fix(raw):
+        try:
+            d = json.loads(raw)
+        except Exception:
+            return raw
+        slots = d.get("slots")
+        if not isinstance(slots, list):
+            return raw
+        new_slots, changed = [], False
+        for s in slots:
+            if not isinstance(s, str):
+                new_slots.append(s)
+                continue
+            if ":" in s:
+                typ, val = s.split(":", 1)
+                typ, val = typ.strip(), val.strip()
+            else:
+                typ, val = "", s.strip()
+            target = name_to_slot.get(val)
+            if target and (not typ or target.startswith(typ)):
+                new_slots.append(f"{typ}:{target}" if typ else target)
+                changed = True
+            else:
+                new_slots.append(s)
+        if changed:
+            d["slots"] = new_slots
+            return json.dumps(d, ensure_ascii=False)
+        return raw
+
+    pat = re.compile(r'===(SCENE_INSTRUCTION|VIDEO_INSTRUCTION|AUDIO_INSTRUCTION)===\s*\n([^\n]+)')
+    return pat.sub(lambda m: f"==={m.group(1)}===\n{_fix(m.group(2).strip())}", script_text)
+
+
+def _normalize_scene_slots(script_text, slot_to_asset):
+    """场景槽位校正：LLM 拆解时可能把「场景」槽位标错（如第二段兔子家写成 场景:场景A）。
+
+    用 H3_PROMPT 的 subject_definitions 描述（<Subject N> 是 <Picture M> 中的{描述}）匹配「场景」素材名，
+    若 slots 里「场景」槽位指向的素材与描述不符，则确定性纠正为该素材对应的槽位名。
+    只校正「场景」类型（每段场景唯一、匹配最可靠）；找不到映射或无法解析的块原样保留。
+    """
+    if not script_text or not slot_to_asset:
+        return script_text
+    # 「场景」素材名 → 槽位名（含短名兜底）
+    scene_slots = {}
+    for slot, asset in slot_to_asset.items():
+        if not slot.startswith("场景"):
+            continue
+        m = re.match(r'^(?:图片|视频|音频)\d+\s+[^\s]+\s+(.+)$', asset or "")
+        full = m.group(1).strip() if m else (asset or "").strip()
+        if full:
+            scene_slots.setdefault(full, slot)
+            if " " in full:
+                scene_slots.setdefault(full.split()[-1], slot)
+    if not scene_slots:
+        return script_text
+
+    def _process(block):
+        m_scene = re.search(r'===SCENE_INSTRUCTION===\s*\n([^\n]+)', block)
+        if not m_scene:
+            return block
+        try:
+            d = json.loads(m_scene.group(1).strip())
+        except Exception:
+            return block
+        slots = d.get("slots")
+        if not isinstance(slots, list):
+            return block
+        # 顶部「**场景**: 」字段（与每段标题/场景元数据对齐，最可靠）；回退 subject_definitions 描述
+        top_scenes = []
+        m_top = re.search(r'^\*\*场景\*\*\s*[:：]\s*(.+)$', block, re.M)
+        if m_top:
+            top_scenes = [x.strip() for x in re.split(r'[,，、/;；]', m_top.group(1)) if x.strip()]
+        # subject_definitions: <Subject N> 是 <Picture M> 中的{描述}
+        descs = []  # descs[M-1] = 描述
+        m_h3 = re.search(r'===H3_PROMPT===(.*?)(?:===|\Z)', block, re.S)
+        if m_h3:
+            for sm in re.finditer(r'<Subject\s+\d+>\s*是\s*<Picture\s+(\d+)>\s*中的(.*)', m_h3.group(1)):
+                try:
+                    pic = int(sm.group(1))
+                except Exception:
+                    continue
+                desc = sm.group(2).strip()
+                while len(descs) < pic:
+                    descs.append("")
+                descs[pic - 1] = desc
+        if not top_scenes and not descs:
+            return block
+        # 图片类槽位顺序 = <Picture> 序号顺序（官方约定）
+        new_slots, changed, img_idx = list(slots), False, 0
+        for i, s in enumerate(slots):
+            if not isinstance(s, str) or ":" not in s:
+                continue
+            typ, val = s.split(":", 1)
+            typ, val = typ.strip(), val.strip()
+            if typ not in ("场景", "角色", "道具", "分镜", "其他"):
+                continue
+            desc = descs[img_idx] if img_idx < len(descs) else ""
+            img_idx += 1
+            if typ != "场景":
+                continue
+            # 候选：顶部「场景」字段优先，回退描述
+            cands = top_scenes if top_scenes else ([desc] if desc else [])
+            if not cands:
+                continue
+            # 匹配场景素材名（长名优先）
+            hit = None
+            for cand in cands:
+                for nm, slot in scene_slots.items():
+                    if _match_asset(nm, cand):
+                        if hit is None or len(nm) > len(hit[0]):
+                            hit = (nm, slot)
+            if not hit:
+                continue
+            cur = slot_to_asset.get(val) or slot_to_asset.get(f"场景:{val}") or ""
+            cm = re.match(r'^(?:图片|视频|音频)\d+\s+[^\s]+\s+(.+)$', cur or "")
+            cur_name = cm.group(1).strip() if cm else (cur or "").strip()
+            if cur_name and _match_asset(cur_name, hit[0]):
+                continue  # 已正确，无需改
+            new_slots[i] = f"场景:{hit[1]}"
+            changed = True
+        if changed:
+            d["slots"] = new_slots
+            return block.replace(m_scene.group(0),
+                                 f"===SCENE_INSTRUCTION===\n{json.dumps(d, ensure_ascii=False)}")
+        return block
+
+    pat = re.compile(r'\[SHOT_START\].*?\[SHOT_END\]', re.S)
+    return pat.sub(lambda m: _process(m.group(0)), script_text)
+
+
+def _prune_fantasy_assets(script_text, slot_to_asset):
+    """幻想素材清理：顶部元数据字段与调度 slots 中，凡不在「传给 LLM 的素材描述」范围内的名称一律清除。
+
+    LLM 可能把剧情需要的元素（如木栅栏）当道具写进每段顶部列表 / 调度 slots，但素材描述里没有 → 幻觉。
+    依据：已知素材名集合（slot_to_asset 值中的名称）+ 已知槽位集合（slot_to_asset 键）。
+    只清理「顶部字段 + 调度 slots」，不动 detailed_description 剧情正文。
+    """
+    if not script_text or not slot_to_asset:
+        return script_text
+    known_names = set()
+    known_slots = set(slot_to_asset.keys())
+    for asset in slot_to_asset.values():
+        m = re.match(r'^(?:图片|视频|音频)\d+\s+[^\s]+\s+(.+)$', asset or "")
+        full = m.group(1).strip() if m else (asset or "").strip()
+        if full:
+            known_names.add(full)
+            if " " in full:
+                known_names.add(full.split()[-1])
+
+    def _keep(item):
+        item = (item or "").strip()
+        if not item or item == "无":
+            return True
+        if ":" in item:
+            _t, v = item.split(":", 1)
+            return v.strip() in known_slots
+        return any(_match_asset(nm, item) for nm in known_names)
+
+    def _fix_fields(block):
+        def _repl(m):
+            key = m.group(1).strip()
+            items = [x.strip() for x in re.split(r'[,，、/;；]', m.group(2)) if x.strip()]
+            kept = [x for x in items if _keep(x)]
+            return f"**{key}**: " + ("、".join(kept) if kept else "无")
+        return re.sub(r'^\*\*((?:角色|场景|道具|视频|音频|音效|音乐|其他))\*\*\s*[:：]\s*(.+)$',
+                      _repl, block, flags=re.M)
+
+    def _fix_slots(raw):
+        try:
+            d = json.loads(raw)
+        except Exception:
+            return raw
+        slots = d.get("slots")
+        if not isinstance(slots, list):
+            return raw
+        kept = [s for s in slots if _keep(s)]
+        if len(kept) == len(slots):
+            return raw
+        d["slots"] = kept
+        return json.dumps(d, ensure_ascii=False)
+
+    def _process(block):
+        block = _fix_fields(block)
+        pat = re.compile(r'===(SCENE_INSTRUCTION|VIDEO_INSTRUCTION|AUDIO_INSTRUCTION)===\s*\n([^\n]+)')
+        block = pat.sub(lambda m: f"==={m.group(1)}===\n{_fix_slots(m.group(2).strip())}", block)
+        return block
+
+    pat = re.compile(r'\[SHOT_START\].*?\[SHOT_END\]', re.S)
+    return pat.sub(lambda m: _process(m.group(0)), script_text)
 
 
 def _detect_enables(story, assets_cfg):
@@ -830,6 +1373,8 @@ def _persist_seed_control(manager, enhance, seed_control, current_seed, used_see
         new_seed = int(used_seed)
     elif seed_control == "increment":
         new_seed = current_seed + 1
+    elif seed_control == "decrement":
+        new_seed = current_seed - 1
     else:
         return None
     if int(enhance.get("seed", 0) or 0) == new_seed:
@@ -867,28 +1412,26 @@ def _enhance_bus(enhance):
 def _run_script_processor(story, manager, video_count, story_style, story_name, duration, prompt_lang, seed,
                           ref_image_intro="", ref_video_intro="", ref_audio_intro="",
                           enable_scene=True, enable_props=True, enable_video=True, enable_audio=True,
-                          mode="生成模式 (Generate)"):
+                          mode="生成模式 (Generate)", gen_dir=None):
     """剧本与镜头处理器：直接严格调用 JZL_MiniMax_ScriptProcessor.execute（100% 复刻官方逻辑/格式）。
 
     返回 (script_output, err)。script_output = 统计表 + [SHOT_START] 分段块（生成模式含「【故事】」正文块），
     与「JZL - 🎬 剧本与镜头处理器」节点「剧本输出」端口内容完全一致。
     """
     from .nodes_llama import JZL_MiniMax_ScriptProcessor
-    from .presets.script import SEGMENT_COUNT_OPTIONS
 
     enhance = manager.get("enhance") or {}
     is_api = "api" in str(enhance.get("llm_backend", ""))
     custom_config, parameters = _llm_local_config(enhance)
-    count = max(1, min(12, int(video_count or 6)))
+    count = max(1, min(48, int(video_count or 6)))
 
     # 本地后端未选模型：直接给出友好错误（官方 ScriptProcessor 内部不校验空模型，会尝试加载而崩）
     if not is_api and not (custom_config.get("model") or "").strip():
         return story, "[错误] 未选择本地 LLM 模型（请在「文本增强设置」里配置）"
 
-    # video_count → 最近的分段数标签（官方 ScriptProcessor 的分段数 combo 只有 4/6/9/12/16/20/24）
-    seg_options = sorted(SEGMENT_COUNT_OPTIONS.values())
-    seg = min(seg_options, key=lambda o: (abs(o - count), o))
-    seg_label = next(k for k, v in SEGMENT_COUNT_OPTIONS.items() if v == seg)
+    # video_count → 精确分段数：直接传数字字符串（剧本处理器按数字精确解析，支持 1-24 任意值，
+    # 不再就近取 4/6/9/12/16/20/24——否则 video_count=1/2/3 会被错误映射成 4 段）
+    seg_label = str(count)
 
     # 自定义规则：管理器「系统提示词」直接喂给官方 ScriptProcessor 的 custom_rule_path（支持纯文本）
     custom_rule_text = (enhance.get("system_prompt") or "").strip()
@@ -896,7 +1439,7 @@ def _run_script_processor(story, manager, video_count, story_style, story_name, 
     enhance_enabled = bool(enhance.get("enabled", False))
     script_force_offload = bool(enhance.get("force_offload", False)) and not enhance_enabled
 
-    print(f"[JZL-剧本] 直接调用 JZL_MiniMax_ScriptProcessor | 模式={mode} | 分段={seg_label} | "
+    print(f"[JZL-剧本] 直接调用 JZL_MiniMax_ScriptProcessor | 模式={mode} | 分段={count}段 | "
           f"风格「{story_style}」 | 故事「{story_name or ''}」 | 后端={'API' if is_api else '本地'} | 增强={'开' if enhance_enabled else '关'}")
     script_output, _bus = JZL_MiniMax_ScriptProcessor().execute(
         mode=mode,
@@ -921,18 +1464,20 @@ def _run_script_processor(story, manager, video_count, story_style, story_name, 
         api_config=json.dumps(enhance.get("api") or {}, ensure_ascii=False) if is_api else None,
         preference=_build_preference(enhance),
         custom_rule_path=custom_rule_text or None,
+        gen_dir=gen_dir,
     )
     if script_output.startswith(("[错误]", "[API 错误]", "[API 配置错误]", "[LLM 错误]")):
         return story, script_output
     return script_output, None
 
 
-def _run_prompt_enhancer(segmented_text, manager, duration, story_style, prompt_lang, seed):
+def _run_prompt_enhancer(segmented_text, manager, duration, story_style, prompt_lang, seed, story_name="", gen_dir=None):
     """提示词增强：对拆解剧本二次润色（润色每个分段的 detailed_description）。
 
     直接复用官方 JZL_MiniMaxPromptEnhancer 节点逻辑（sheding/prompt_enhancer_rules 的规范）。
     与第一次 LLM 拆解共享 seed/生成后控制；强制卸载由外部 _llm_finish 统一在增强后处理。
     偏好设置(preference)在此注入 → 增强器按偏好逐条落实（二次润色）。
+    增强成功后把结果保存到 gen_dir/已增强剧本/（无 gen_dir 时自动新建批次）。
     """
     from .nodes_prompt_enhancer import JZL_MiniMaxPromptEnhancer
     try:
@@ -963,67 +1508,46 @@ def _run_prompt_enhancer(segmented_text, manager, duration, story_style, prompt_
         return segmented_text, f"提示词增强失败：{e}"
     if result.startswith("[错误]"):
         return segmented_text, result
+    # 保存增强后的剧本 → output/jzl/{故事名}/第NNNNN次生成/已增强剧本/增强后剧本_{时间戳}.txt
+    if gen_dir is None:
+        from .nodes_llama import _next_generation_dir
+        gen_dir = _next_generation_dir(story_name)
+    try:
+        from .nodes_llama import _safe_path
+        _dir = os.path.join(gen_dir, "已增强剧本")
+        os.makedirs(_dir, exist_ok=True)
+        _p = _safe_path(_dir, "增强后剧本")
+        with open(_p, "w", encoding="utf-8") as f:
+            f.write(result)
+        print(f"[JZL-增强] 已保存增强后剧本：{_p}")
+    except Exception as _se:
+        print(f"[JZL-增强] 保存增强后剧本失败：{_se}")
     return result, None
 
 
-def _run_pure_prompt_llm(prompt, manager, story_style, prompt_lang, seed, asset_intro_text=""):
-    """纯提示词生成：只用 LLM 润色/扩写用户提示词，不做分段拆解、不生成视频。"""
-    enhance = manager.get("enhance") or {}
-    lang = "zh" if "ZH" in str(prompt_lang or "") else "en"
-    style = (story_style or "热血战斗").strip()
-    pref = _build_preference(enhance)
-    custom = (enhance.get("custom_prompt") or "").strip()
-    rules = (enhance.get("system_prompt") or "").strip()
-
-    if lang == "zh":
-        lines = [
-            "你是一位专业的影视提示词编辑。请对用户输入的提示词进行润色与扩写，使其更适合生成高质量视频。",
-            "",
-            f"故事风格：{style}",
-        ]
-        if pref:
-            lines.append(f"镜头语言偏好：\n{pref}")
-        if asset_intro_text:
-            lines.append(f"可用素材（提示词中的 @引用 必须原样保留，不得改名或替换）：\n{asset_intro_text}")
-        if custom:
-            lines.append(f"用户自定义增强指令：\n{custom}")
-        if rules:
-            lines.append(f"系统规则：\n{rules}")
-        lines += [
-            "",
-            "处理要求：",
-            "1. 完整保留用户输入的原始意图与关键信息：角色、场景、动作、台词、@引用、[SHOT_START]...[SHOT_END] 分段块结构等一律不变；",
-            "2. 只做润色与扩写：把概括性描述改写成具体、可被镜头捕捉的可见动作，丰富画面细节与氛围；",
-            "3. 不做分段拆解：若输入不含 [SHOT_START] 块，保持单一文本输出，不要新增任何分段块；若输入含分段块，保留每个块的结构，只润色块内提示词；",
-            "4. 直接输出处理后的提示词正文，不要任何解释、前言或统计。",
-        ]
-    else:
-        lines = [
-            "You are a professional film prompt editor. Polish and expand the user's prompt to make it suitable for high-quality video generation.",
-            "",
-            f"Story style: {style}",
-        ]
-        if pref:
-            lines.append(f"Directing preference:\n{pref}")
-        if asset_intro_text:
-            lines.append(f"Available assets (preserve all @-references verbatim, do not rename or replace):\n{asset_intro_text}")
-        if custom:
-            lines.append(f"User custom enhancement instructions:\n{custom}")
-        if rules:
-            lines.append(f"System rules:\n{rules}")
-        lines += [
-            "",
-            "Requirements:",
-            "1. Keep all key information intact: characters, scenes, actions, dialogue, @-references, and any [SHOT_START]...[SHOT_END] block structure;",
-            "2. Only polish and expand: rewrite vague descriptions into concrete, camera-capturable visible actions; enrich visual detail and atmosphere;",
-            "3. Do NOT decompose into segments: if the input has no [SHOT_START] blocks, keep it as a single text and do NOT add segment blocks; if it has blocks, preserve each block and only polish the inner prompts;",
-            "4. Output only the processed prompt text, with no explanation, preamble, or statistics.",
-        ]
-
-    result = _llm_chat(enhance, "\n".join(lines), (prompt or "").strip(), seed)
-    if result.startswith(("[API 错误]", "[API 配置错误]", "[LLM 错误]", "[错误]")):
-        return prompt, result
-    return result.strip(), None
+def _resolve_asset_path(path):
+    """资产路径 → 服务器绝对路径：绝对路径直接用；相对路径按 input/output 目录解析
+    （兼容官方 LoadImage 式相对路径 jzl/image/xxx.png，以及旧 jzl_assets/ 与历史绝对路径）。"""
+    p = (path or "").strip()
+    if not p:
+        return ""
+    if os.path.isfile(p):
+        return p
+    try:
+        in_dir = folder_paths.get_input_directory()
+        out_dir = folder_paths.get_output_directory()
+        candidates = (
+            os.path.join(in_dir, p),
+            os.path.join(out_dir, p),
+            os.path.join(in_dir, "jzl", p),
+            os.path.join(in_dir, "jzl_assets", p),
+        )
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+    except Exception:
+        pass
+    return ""
 
 
 def _load_assets_into_pool(assets):
@@ -1033,8 +1557,8 @@ def _load_assets_into_pool(assets):
     for i, item in enumerate(assets.get("images", []) or []):
         if not item.get("enabled", True):
             continue
-        path = (item.get("path") or "").strip()
-        if not path or not os.path.isfile(path):
+        path = _resolve_asset_path(item.get("path"))
+        if not path:
             continue
         try:
             data = _load_image(path)
@@ -1047,8 +1571,8 @@ def _load_assets_into_pool(assets):
     for i, item in enumerate(assets.get("videos", []) or []):
         if not item.get("enabled", True):
             continue
-        path = (item.get("path") or "").strip()
-        if not path or not os.path.isfile(path):
+        path = _resolve_asset_path(item.get("path"))
+        if not path:
             continue
         data, err = _load_video(path)
         name = _asset_name("video", i, item)
@@ -1061,8 +1585,8 @@ def _load_assets_into_pool(assets):
     for i, item in enumerate(assets.get("audios", []) or []):
         if not item.get("enabled", True):
             continue
-        path = (item.get("path") or "").strip()
-        if not path or not os.path.isfile(path):
+        path = _resolve_asset_path(item.get("path"))
+        if not path:
             continue
         try:
             data = _load_audio(path)
@@ -1106,7 +1630,24 @@ def _load_image(path):
 
 
 def _load_audio(path):
-    """加载音频 → AUDIO dict {"waveform": [1, C, L], "sample_rate": int}。"""
+    """加载音频 → AUDIO dict {"waveform": [1, C, L], "sample_rate": int}。
+
+    优先 soundfile（与官方 LoadAudio 一致，扩展名大小写不敏感、兼容性最好），
+    torchaudio 兜底（修复 .WAV 大写扩展名触发 _AudioDecoder() takes no arguments）。
+    """
+    import numpy as np
+    # 1) soundfile（官方 LoadAudio 同款）
+    try:
+        import soundfile as sf
+        data, sample_rate = sf.read(path, dtype="float32")  # [L, C] 或 [L]
+        if data.ndim == 1:
+            data = data[None, ...]
+        else:
+            data = data.T
+        return {"waveform": torch.from_numpy(np.ascontiguousarray(data))[None], "sample_rate": int(sample_rate)}
+    except Exception:
+        pass
+    # 2) torchaudio 兜底
     waveform, sample_rate = torchaudio.load(path)  # [C, L]
     return {"waveform": waveform.unsqueeze(0), "sample_rate": sample_rate}
 
@@ -1144,7 +1685,7 @@ def _load_video(path):
 
 
 class JZL_MiniMaxAssetManager(io.ComfyNode):
-    """MiniMax-H3生成管理器 — 生成模式切换 + 模型/资产/参数/采样解码配置，输出 BUS。
+    """JZL - 🤖 MiniMax-H3短剧生成管理器 — 生成模式切换 + 模型/资产/参数/采样解码配置，输出 BUS。
 
     融合原 1140 工作流核心链路：
     分段处理中心 → 列表分发(每段独立提示词) → 场景/视频/音频调度(从资产池按名取参考)
@@ -1159,51 +1700,57 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
         story_styles = _story_style_options()
         return io.Schema(
             node_id="JZL_MiniMaxAssetManager",
-            display_name="MiniMax-H3生成管理器",
+            display_name="JZL - 🤖 MiniMax-H3短剧生成管理器",
             category="JZL/MiniMax",
             description="MiniMax-H3 生成管理器：分段 + 调度 + 编码 + 采样 + 解码一体化，输出生成总线。",
             inputs=[
                 # 运行模式（顶层切换，等同「JZL - 🎬 剧本与镜头处理器」）
-                io.Combo.Input("run_mode", options=["拆解故事模式", "故事扩展模式", "纯提示词生成"],
-                    default="拆解故事模式", display_name="运行模式",
-                    tooltip="拆解故事模式=按情节把故事拆解为N段（不创意扩展）；故事扩展模式=先扩写故事正文再拆解为N段；纯提示词生成=只用LLM处理提示词，经「已处理剧本」端口输出文本，不生成视频"),
+                io.Combo.Input("run_mode", options=["故事拆解模式", "故事扩展模式", "穿透生成模式", "仅提示词输出"],
+                    default="故事拆解模式", display_name="运行模式",
+                    tooltip="故事拆解模式=按情节把故事拆解为N段（不创意扩展）；故事扩展模式=先扩写故事正文再拆解为N段；穿透生成模式=跳过LLM拆解与增强，直接用提示词生成（含[SHOT_START]块则逐段，否则单段）；仅提示词输出=只用LLM处理提示词，经「已处理剧本」端口输出文本，不生成视频"),
                 # 生成参数（原生 widget，与「海螺H3视频参数」一致）
+                io.String.Input("display_info", display_name="生成详情", default="分辨率：832x480丨每段帧数：192丨共计段数：6丨总帧数：1152丨总时长：48秒",
+                    multiline=False, advanced=True, socketless=True,
+                    tooltip="只读显示：当前画幅/MP/时长/段数计算出的分辨率、每段帧数、段数、总帧数、总时长（对齐倍数固定 32）"),
                 io.Combo.Input("aspect_ratio", options=ASPECT_RATIO_OPTIONS, default="16:9 (Widescreen)",
                     display_name="画幅比例", tooltip="画幅比例（分辨率按 MP×1024² 公式自动计算，对齐倍数固定 32）"),
-                io.Float.Input("megapixels", display_name="百万像素 MP", default=1.0, min=0.1, max=16.0, step=0.1,
+                io.Float.Input("megapixels", display_name="百万像素（MP）", default=1.0, min=0.1, max=16.0, step=0.1,
                     tooltip="总像素数（MP），画幅×MP 决定分辨率"),
-                io.String.Input("display_info", display_name="分辨率 / 帧数", default="832x480 · 192帧",
-                    multiline=False, advanced=True, socketless=True,
-                    tooltip="只读显示：当前画幅/MP/时长计算出的分辨率与帧数（对齐倍数固定 32）"),
-                io.Int.Input("duration", display_name="每段视频时长（秒）", default=8, min=4, max=15, step=1,
+                io.Int.Input("duration", display_name="每段视频时长", default=8, min=4, max=15, step=1,
                     tooltip="每段视频时长（秒），等同「剧本与镜头处理器」的每段视频时长(秒)"),
-                io.Float.Input("scale_factor", display_name="参考图放大", default=1.0, min=1.0, max=5.0, step=0.1,
+                io.Float.Input("scale_factor", display_name="参考数值放大", default=1.0, min=1.0, max=5.0, step=0.1,
                     tooltip="参考图放大系数"),
-                io.Float.Input("upscale_scale", display_name="二采放大倍数", default=1.5, min=1.0, max=4.0, step=0.05,
+                io.Float.Input("upscale_scale", display_name="二采latent放大", default=1.5, min=1.0, max=4.0, step=0.05,
                     tooltip="二采（Ref2va）放大倍数"),
-                io.Int.Input("video_count", display_name="生成视频数量", default=6, min=1, max=12,
-                    tooltip="生成视频数量（分段数，最多 12 段）"),
+                io.Int.Input("video_count", display_name="生成视频数量", default=6, min=1, max=48,
+                    tooltip="生成视频数量（分段数，支持 1~48 任意值；统一控制：提示词拆解段数 / 分发列表数 / 采样数 / 分段保存数）"),
                 io.Combo.Input("save_mode", options=["分段保存", "拼接保存"], default="分段保存",
-                    display_name="视频保存模式",
-                    tooltip="分段保存=按顺序批量输出每段图像/音频；拼接保存=全部生成后拼接成一段再输出"),
+                    display_name="保存模式", advanced=True,
+                    tooltip="分段保存=按顺序批量输出每段图像/音频（接视频保存分配→VHS）；拼接保存=全部生成后拼接成一段再输出。界面入口已移至「视频保存设置」面板"),
+                io.Boolean.Input("auto_save", default=False, display_name="分段视频自动保存", advanced=True,
+                    tooltip="勾选后每段跑完立即用 ffmpeg 把该段落盘 mp4 到「自动保存路径」（不依赖下游 VHS）"),
+                io.String.Input("auto_save_path", default="", display_name="自动保存路径", advanced=True,
+                    placeholder="D:/output/segments",
+                    tooltip="分段视频自动保存的落盘目录（每段生成 `segment_NN.mp4`）"),
+                io.Boolean.Input("auto_merge", default=False, display_name="分段视频自动合并", advanced=True,
+                    tooltip="勾选后把 ffmpeg 落盘的各段 mp4 按顺序拼接为完整一个视频到「合并输出路径」（无论保存模式；未开自动保存时内部临时落盘）"),
+                io.String.Input("auto_merge_path", default="", display_name="合并输出路径", advanced=True,
+                    placeholder="D:/output/merged.mp4",
+                    tooltip="分段视频自动合并的完整输出文件路径（mp4）"),
+                io.Boolean.Input("auto_merge_delete", default=False, display_name="合并后删除分段视频", advanced=True,
+                    tooltip="合并完成后删除各分段 mp4（仅保留合并结果；未开自动保存时的临时分段本就会清理）"),
                 # ③提示词：剧本处理器参数（主界面显示）
                 io.Combo.Input("story_style", options=story_styles, default=story_styles[0],
                     display_name="故事风格", tooltip="故事风格（剧本处理器按此风格拆解与润色）"),
                 io.String.Input("story_name", display_name="故事名称", default="",
                     tooltip="故事名称（用于保存命名 / 日志）"),
-                io.Combo.Input("prompt_lang", options=["中文 [ZH]", "英文 [EN]"], default="中文 [ZH]",
-                    display_name="提示词语言", tooltip="提示词语言"),
                 io.Model.Input("model", display_name="主模型", optional=True, advanced=True),
                 io.Clip.Input("clip", display_name="CLIP", optional=True, advanced=True),
                 io.Vae.Input("vae", display_name="视觉VAE", optional=True, advanced=True),
                 io.Vae.Input("audio_vae", display_name="音频VAE", optional=True, advanced=True),
-                io.String.Input("prompt_input", display_name="外部提示词", multiline=True, force_input=True,
-                    optional=True,
-                    placeholder="连线后使用外部提示词（替代节点内编辑）…",
-                    tooltip="可选：接外部 STRING 提示词替代节点内编辑；不接则用节点内编辑的提示词"),
                 io.String.Input("internal_prompt", display_name="节点内提示词", multiline=True, advanced=True,
                     socketless=True,
-                    tooltip="节点内编辑的提示词（prompt_input 未连线时使用）"),
+                    tooltip="节点内编辑的提示词（提示词来源，随工作流保存）"),
                 io.String.Input("manager_settings", display_name="节点配置", multiline=True, advanced=True,
                     socketless=True, default="",
                     tooltip="本节点独立保存的完整配置 JSON（资产/增强/采样解码），随工作流保存，节点间互不影响"),
@@ -1229,34 +1776,49 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
             samp_random = (sample_decode.get("seed_mode") or "randomize") == "randomize"
             if llm_random or samp_random:
                 return f"random@{time.time_ns()}"
-            return str(cfg)
+            # 固定种子时：生成相关输入变化也必须触发重跑（否则改段数/模式/风格/画幅/提示词被缓存跳过 =「生成视频数量失效」）
+            gen_keys = ["run_mode", "video_count", "story_style", "duration",
+                        "aspect_ratio", "megapixels", "scale_factor", "upscale_scale", "save_mode",
+                        "internal_prompt"]
+            gen_sig = {k: kwargs.get(k) for k in gen_keys}
+            return f"{cfg}|{gen_sig}"
         except Exception:
             return "no-manager"
 
     @classmethod
     def execute(cls, run_mode="拆解故事模式", video_count=6, aspect_ratio="16:9 (Widescreen)",
                 megapixels=1.0, duration=8, scale_factor=1.0, upscale_scale=1.5, display_info="",
-                story_style="热血战斗", story_name="", prompt_lang="中文 [ZH]", save_mode="分段保存",
-                prompt_input=None, internal_prompt=None, manager_settings="",
+                story_style="热血战斗", story_name="", save_mode="分段保存",
+                auto_save=False, auto_save_path="", auto_merge=False, auto_merge_path="",
+                auto_merge_delete=False,
+                internal_prompt=None, manager_settings="",
                 clip=None, vae=None, audio_vae=None, model=None) -> io.NodeOutput:
-        run_mode = (run_mode or "拆解故事模式").strip()
-        pure_prompt = run_mode == "纯提示词生成"
+        run_mode = (run_mode or "故事拆解模式").strip()
+        # 旧工作流模式名兼容：旧名 → 新名
+        _rm_aliases = {"拆解故事模式": "故事拆解模式", "直通模式": "穿透生成模式", "纯提示词生成": "仅提示词输出"}
+        run_mode = _rm_aliases.get(run_mode, run_mode)
+        pure_prompt = run_mode == "仅提示词输出"
+        passthrough = run_mode == "穿透生成模式"
         story_mode = "生成模式 (Generate)" if run_mode == "故事扩展模式" else "拆解模式 (Decompose)"
+
+        # 故事名称必填：不填直接终止（生成命名 / 保存目录都依赖故事名）
+        story_name = (story_name or "").strip()
+        if not story_name:
+            print("[JZL-管理器] ⚠️ 必须填写「故事名称」才能生成（已终止）")
+            return io.NodeOutput([], [], "", ui={"manager_error": "必须填写「故事名称」后才能生成"})
 
         # 节点独立配置：工作流内保存的 manager_settings 优先；空则回退全局（旧工作流兼容）
         manager = _parse_node_manager_settings(manager_settings)
         enhance = manager.get("enhance") or {}
         assets_cfg = manager.get("assets") or {}
         sample_decode = manager.get("sample_decode") or {}
+        # 输出语言（在「剧本拆解配置」面板最顶「输出语言」分类中配置，存 manager_settings）
+        prompt_lang = (enhance.get("prompt_lang") or "中文 [ZH]").strip() or "中文 [ZH]"
 
-        # 内部提示词防御：旧工作流可能把模型输出误连到 internal_prompt（非字符串）
+        # 提示词：仅节点内编辑（外部提示词端口已删除）；防御旧工作流误连非字符串
         if not isinstance(internal_prompt, str):
             internal_prompt = ""
-
-        # 提示词替代关系：外部提示词端口（prompt_input）连线后优先使用；否则用节点内编辑（internal_prompt）
-        prompt_input = (prompt_input or "").strip()
-        if not prompt_input:
-            prompt_input = (internal_prompt or "").strip()
+        prompt_input = (internal_prompt or "").strip()
 
         # 随机种子（LLM 剧本/增强）+ 生成后控制（control_after_generate）
         seed_control = (enhance.get("seed_control") or "randomize").strip() or "randomize"
@@ -1265,24 +1827,39 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
             llm_seed = int(torch.randint(0, 0x7fffffffffffffff, (1,)).item())
         else:
             llm_seed = current_seed
-        _mode_hint = "（纯提示词生成：仅LLM处理→已处理剧本输出，不生成视频）" if pure_prompt else (
-            "（拆解故事模式→生成）" if run_mode == "拆解故事模式" else "（故事扩展模式→生成）")
+        _mode_hint = "（仅提示词输出：只用LLM处理→已处理剧本输出，不生成视频）" if pure_prompt else (
+            "（穿透生成模式：跳过LLM拆解/增强，直接用提示词生成）" if passthrough else (
+            "（故事拆解模式→生成）" if run_mode == "故事拆解模式" else "（故事扩展模式→生成）"))
         print(f"[JZL-管理器] 运行模式={run_mode} | LLM种子={llm_seed}({seed_control}) | "
-              f"采样种子模式={sample_decode.get('seed_mode', 'randomize')} | 共{max(1, min(12, int(video_count or 6)))}段{_mode_hint}")
+              f"采样种子模式={sample_decode.get('seed_mode', 'randomize')} | 共{max(1, min(48, int(video_count or 6)))}段{_mode_hint}")
 
-        # 纯提示词生成：只用 LLM 处理提示词 → 「已处理剧本」端口输出文本，跳过拆解与生成
+        # 仅提示词输出：完全等价「故事扩展模式(Generate)」的 LLM 处理（扩写故事 + 拆解分段），
+        # 但只输出纯文本（经「已处理剧本」端口），彻底去掉编码/采样/解码/视频保存；
+        # 无需接 model/clip/vae/audio_vae（本分支不用它们）。
         if pure_prompt:
             if not prompt_input:
                 _llm_finish(enhance)
                 return io.NodeOutput([], [], "")
+            _pcount = max(1, min(48, int(video_count)))
             ri, rv, ra, _ = _build_asset_intro(assets_cfg)
-            processed, p_err = _run_pure_prompt_llm(
-                prompt_input, manager, story_style, prompt_lang, llm_seed,
-                "\n".join(x for x in (ri, rv, ra) if x))
-            _llm_finish(enhance)
-            _seed_ui = _build_seed_ui(manager, enhance, seed_control, current_seed, llm_seed)
+            _pe, _pp, _pv, _pa = _detect_enables(prompt_input, assets_cfg)
+            print(f"[JZL-管理器] 仅提示词输出：按「故事扩展模式(Generate)」扩写并拆解为 {_pcount} 段（纯文本，不生成视频）")
+            from .nodes_llama import _next_generation_dir
+            gen_dir = _next_generation_dir(story_name)
+            processed, p_err = _run_script_processor(
+                prompt_input, manager, _pcount, story_style, story_name, duration, prompt_lang, llm_seed,
+                ref_image_intro=ri, ref_video_intro=rv, ref_audio_intro=ra,
+                enable_scene=_pe, enable_props=_pp, enable_video=_pv, enable_audio=_pa,
+                mode="生成模式 (Generate)", gen_dir=gen_dir)
             if p_err:
                 print(f"[JZL-管理器] {p_err}")
+            # 增强（可选，与故事扩展模式一致）
+            if enhance.get("enabled", False):
+                processed, p_err2 = _run_prompt_enhancer(processed, manager, duration, story_style, prompt_lang, llm_seed, story_name, gen_dir)
+                if p_err2:
+                    print(f"[JZL-管理器] {p_err2}")
+            _llm_finish(enhance)
+            _seed_ui = _build_seed_ui(manager, enhance, seed_control, current_seed, llm_seed)
             return io.NodeOutput([], [], processed, ui=_seed_ui)
 
         # 清空重建池，避免旧资产/总线残留
@@ -1294,7 +1871,7 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
 
         width, height = _resolve_gen_size(aspect_ratio, megapixels)
         length = _resolve_length(duration)
-        count = max(1, min(12, int(video_count)))
+        count = max(1, min(48, int(video_count)))
 
 
         # ── ③提示词：资产介绍 + 启用判断 + 槽位映射（供调度匹配）──
@@ -1302,22 +1879,42 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
         JZL_SLOT_MAP.update(slot_to_asset)
         enable_scene, enable_props, enable_video, enable_audio = _detect_enables(prompt_input, assets_cfg)
 
-        # ① 故事拆解（剧本处理器）：故事 → 分段（输入已是分段文本时跳过）
+        # ① 故事拆解（剧本处理器）：故事 → 分段（输入已是分段文本时跳过；直通模式跳过 LLM）
         has_shots = bool(re.search(r'\[SHOT_START\]', prompt_input or ""))
-        if enhance.get("story_decompose", True) and not has_shots and prompt_input:
+        # 每次运行归入一个新批次：output/jzl/{故事名}/第NNNNN次生成/（拆解+增强共用同一批次）
+        gen_dir = None
+        if not passthrough and enhance.get("story_decompose", True) and not has_shots and prompt_input:
+            from .nodes_llama import _next_generation_dir
+            gen_dir = _next_generation_dir(story_name)
             prompt_input, err = _run_script_processor(
                 prompt_input, manager, count, story_style, story_name, duration, prompt_lang, llm_seed,
                 ref_image_intro=ref_image_intro, ref_video_intro=ref_video_intro, ref_audio_intro=ref_audio_intro,
                 enable_scene=enable_scene, enable_props=enable_props,
-                enable_video=enable_video, enable_audio=enable_audio, mode=story_mode)
+                enable_video=enable_video, enable_audio=enable_audio, mode=story_mode, gen_dir=gen_dir)
             if err:
                 errors.append(err)
 
-        # ② 提示词增强（润色 detailed_description）：开启增强时执行
-        if enhance.get("enabled", False):
-            prompt_input, err = _run_prompt_enhancer(prompt_input, manager, duration, story_style, prompt_lang, llm_seed)
+        # ② 提示词增强（润色 detailed_description）：开启增强时执行（直通模式跳过）
+        if not passthrough and enhance.get("enabled", False):
+            if gen_dir is None:
+                from .nodes_llama import _next_generation_dir
+                gen_dir = _next_generation_dir(story_name)
+            prompt_input, err = _run_prompt_enhancer(prompt_input, manager, duration, story_style, prompt_lang, llm_seed, story_name, gen_dir)
             if err:
                 errors.append(err)
+
+        # 直通模式：无 [SHOT_START] 块 → 整段提示词当单段生成（不用 video_count 复制）
+        if passthrough and not has_shots:
+            count = 1
+
+        # 调度指令规范化：LLM 可能把 slots 写成素材名（角色:兔子），用槽位映射反查纠正为槽位名（角色:角色A），
+        # 保证下游调度严格按「类型:槽位名」匹配（对齐官方设定词「严禁写素材名」）
+        prompt_input = _normalize_dispatch_slots(prompt_input, slot_to_asset)
+        # 场景槽位校正：LLM 可能把「场景」槽位标错（第二段兔子家写成 场景:场景A），
+        # 用每段顶部「**场景**: 」字段（回退 subject_definitions 描述）匹配场景素材名，确定性纠正为正确槽位
+        prompt_input = _normalize_scene_slots(prompt_input, slot_to_asset)
+        # 幻想素材清理：顶部字段/调度 slots 中不在素材描述范围内的名称一律清除（如幻觉道具「木栅栏」）
+        prompt_input = _prune_fantasy_assets(prompt_input, slot_to_asset)
 
         # 卸载本地 LLM（最后一个 LLM 步骤之后，按 force_offload）
         _llm_finish(enhance)
@@ -1332,11 +1929,32 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
         seed_mode = sample_decode.get("seed_mode", "randomize") or "randomize"
 
         bus_items = []
+        saved_segments = []
+        auto_save = bool(auto_save)
+        auto_merge = bool(auto_merge)
+        auto_merge_delete = bool(auto_merge_delete)
+        # 保存/合并路径固定为运行中 ComfyUI 的 output/jzl（运行时可推导，不写死盘符，不可修改）
+        _out_root = os.path.abspath(folder_paths.get_output_directory())
+        _jzl_dir = os.path.join(_out_root, "jzl")
+        _safe_story = _safe_story_name(story_name)
+        # 逐段落盘 / 自动合并 都归入 output/jzl/{故事名}/（视频名称与保存文件夹均与故事名一致）
+        auto_save_path = os.path.join(_jzl_dir, _safe_story)
+        auto_merge_path = os.path.join(_jzl_dir, _safe_story)
+        _seg_start = _next_counter(auto_save_path, f"{_safe_story}_分段")
+        if auto_save:
+            try:
+                os.makedirs(auto_save_path, exist_ok=True)
+            except Exception as _me:
+                errors.append(f"无法创建自动保存目录：{auto_save_path}（{_me}）")
+                auto_save = False
+        first_seed = None
         for i in range(count):
             raw = shots[i].strip() if i < len(shots) else ""
             h3, scene, vid, aud = _parse_four_in_one(raw)
             if not h3:
-                h3 = prompt_input.strip() if i == 0 and prompt_input else "[未找到H3提示词]"
+                # 直通/无四段标记：用当前块原文（直通多块时每块独立成段）；无块回退整段提示词
+                h3 = raw.strip() if raw.strip() else (
+                    prompt_input.strip() if i == 0 and prompt_input else "[未找到H3提示词]")
 
             # @ 引用：从提示词提取 @资产名（移除标记），匹配为参考素材
             mention_names, h3 = _extract_mentions(h3)
@@ -1358,18 +1976,28 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
                 elif kind == "audio" and len(ref_audios) < 3:
                     ref_audios.append(data)
 
-            # 生成模式自动推断（不再手动选择）：
-            #  有参考视频 → 多参考/二创（REF2VA 全传）；无视频但有图 → 图片到视频（1张=首帧，≥2张=首尾帧）；否则 → 纯文本
-            mode = "多参考生成音视频-REF2VA"
-            if not ref_videos:
-                mode = "首尾帧生成音视频-FL2VA" if len(ref_images) > 1 else (
-                    "首帧图生成音视频-I2VA" if ref_images else "纯文本生成音视频-T2VA")
+            # 12 参考总上限（官方文档）：图片 + 视频 + 音频（视频音轨随视频计）≤ 12
+            # 兜底截断优先级（用户选择：图 > 音频 > 视频）——仅纯文本提示词（无前端 @去重限制）可能超限
+            while len(ref_images) + len(ref_videos) + len(ref_audios) > 12:
+                if ref_videos:
+                    ref_videos.pop()
+                elif ref_audios:
+                    ref_audios.pop()
+                elif ref_images:
+                    ref_images.pop()
+
+            # 生成模式：始终 ref2va（对齐 1146 分镜组：图片全部作 <Picture> 身份参考，不用首尾帧）
+            mode = "纯文本生成音视频-T2VA"
+            if ref_videos or ref_images or ref_audios:
+                mode = "多参考生成音视频-REF2VA"
 
             can_generate = clip is not None and vae is not None and model is not None
             if (ref_videos or ref_audios) and audio_vae is None:
                 can_generate = False
 
             seed = _resolve_seed(seed_mode, base_seed, i)
+            if first_seed is None:
+                first_seed = seed
             if not can_generate:
                 need = "CLIP / VAE / model"
                 if (ref_videos or ref_audios) and audio_vae is None:
@@ -1381,36 +2009,109 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
                 })
                 continue
 
+            print(f"[JZL-管理器] ── 分段 {i + 1}/{count} 生成开始（{mode}，种子 {seed}）──")
             try:
-                if ref_videos:
-                    # 多参考/二创：参考视频 + 独立音频 + 图片（如有）
-                    positive, latent = _encode_ref_to_video(
-                        clip, vae, audio_vae, h3, width, height, length,
-                        ref_images=ref_images, ref_videos=ref_videos,
-                        ref_video_audios=ref_audios[:len(ref_videos)], ref_audios=ref_audios,
-                        ref_scale=scale_factor)
-                else:
-                    # 图片到视频 / 纯文本：1张=首帧，≥2张=首尾帧
-                    first = ref_images[0] if ref_images else None
-                    last = ref_images[1] if len(ref_images) > 1 else None
-                    positive, latent = _encode_image_to_video(clip, vae, h3, width, height, length, first, last)
+                # 始终 ref2va 编码（对齐 1146）；前 N 个音频与视频配对为音轨，其余为独立音频（不重复编码）
+                positive, latent = _encode_ref_to_video(
+                    clip, vae, audio_vae, h3, width, height, length,
+                    ref_images=ref_images, ref_videos=ref_videos,
+                    ref_video_audios=ref_audios[:len(ref_videos)],
+                    ref_audios=ref_audios[len(ref_videos):],
+                    ref_scale=scale_factor)
 
                 samples = _sample_av(model, positive, latent, sample_decode, seed)
-                image, audio = _decode_av(vae, audio_vae, samples)
+                _second = (sample_decode or {}).get("second") or {}
+                if _second.get("enabled"):
+                    if (_second.get("sigmas_mode") or "scheduler") == "custom":
+                        print(f"[JZL-管理器] 分段 {i + 1}/{count} 二次采样：视频latent放大 {upscale_scale}x（自定义 Sigmas：{_second.get('custom_sigmas') or ''}，{_second.get('sampler', 'euler')}）…")
+                    else:
+                        print(f"[JZL-管理器] 分段 {i + 1}/{count} 二次采样：视频latent放大 {upscale_scale}x（{_second.get('sampler', 'euler')}/{_second.get('scheduler', 'simple')}，{_second.get('steps', 3)}步，denoise {_second.get('denoise', 0.3)}）…")
+                    samples = _run_second_sampling(model, positive, samples, sample_decode, _second, upscale_scale, seed)
+                print(f"[JZL-管理器] 分段 {i + 1}/{count} 采样完成（{sample_decode.get('steps', 4)} 步 / {sample_decode.get('sampler', 'res_multistep')}）{'（含二次采样）' if _second.get('enabled') else ''}，开始解码…")
+                image, audio = _decode_av(vae, audio_vae, samples, sample_decode)
 
                 JZL_BUS_POOL[i] = {"image": image, "audio": audio}
+                # 分段视频自动保存：每段解码完立即用 ffmpeg 落盘 mp4（不依赖下游 VHS）
+                if auto_save and auto_save_path:
+                    try:
+                        _sp = _save_segment_mp4(image, audio, auto_save_path, i + 1,
+                                                story_name=_safe_story, counter=_seg_start + i)
+                        saved_segments.append(_sp)
+                        print(f"[JZL-管理器] 分段 {i + 1}/{count} 已自动保存：{_sp}")
+                    except Exception as _se:
+                        errors.append(f"第{i + 1}段自动保存失败：{_se}")
+                _frames = int(image.shape[0]) if image is not None else 0
+                print(f"[JZL-管理器] 分段 {i + 1}/{count} 生成完成：图像 {_frames} 帧 + 音频{'✓' if audio is not None else '✗'}，已写入总线")
                 bus_items.append({
                     "index": i, "mode": mode, "prompt": h3,
                     "has_image": True, "has_audio": audio is not None,
-                    "frames": int(image.shape[0]) if image is not None else 0,
+                    "frames": _frames,
                 })
             except Exception as e:
-                errors.append(f"第{i + 1}段生成失败：{e}")
+                err = str(e)
+                if "no kernel image" in err or "CUDA error" in err:
+                    err += (f"\n  [JZL提示] CUDA/ROCm 内核与显卡架构不匹配（no kernel image）：当前 torch 没有该 GPU 的编译内核。"
+                            f"诊断：{_gpu_diag_hint()}\n"
+                            f"  请确认云机显卡型号与 torch/CUDA 版本匹配（本地 Z 盘 torch 是 ROCm 版 2.9.1+rocm7.13 + AMD 核显，"
+                            f"无法用于其他架构显卡生成）。")
+                errors.append(f"第{i + 1}段生成失败：{err}")
                 bus_items.append({
                     "index": i, "mode": mode, "prompt": h3,
                     "has_image": False, "has_audio": False,
-                    "error": f"生成失败：{e}",
+                    "error": f"生成失败：{err}",
                 })
+
+        # 采样种子回写：randomize 时把实际使用的种子（第 1 段）回传前端 → 刷新后显示真实种子
+        if seed_mode == "randomize" and first_seed is not None:
+            _samp_ui = {"seed_update_sample": {"seed": int(first_seed), "seed_control": seed_mode}}
+            if _seed_ui:
+                _seed_ui = dict(_seed_ui)
+                _seed_ui.update(_samp_ui)
+            else:
+                _seed_ui = _samp_ui
+
+        # 生成结束：按「解码前清理」配置执行最终显存清理（卸载显存模型时释放，见日志确认）
+        if (sample_decode or {}).get("decode_cleanup") == "卸载显存模型":
+            _cleanup_vram("卸载显存模型")
+            print("[JZL-管理器] 显存清理完成（卸载显存模型）")
+
+        # 分段视频自动合并：把 ffmpeg 落盘的各段 mp4 按顺序拼接为完整一个视频（无论保存模式）。
+        # 未开「自动保存」时内部临时落盘再合并，合并后清理临时分段文件。
+        if auto_merge and auto_merge_path:
+            _segs = list(saved_segments)
+            _merge_dir = None
+            if not _segs:
+                _merge_dir = os.path.join(tempfile.gettempdir(), f"_jzl_merge_{int(time.time())}")
+                os.makedirs(_merge_dir, exist_ok=True)
+                for i in range(count):
+                    _item = JZL_BUS_POOL.get(i)
+                    if _item and _item.get("image") is not None:
+                        try:
+                            _segs.append(_save_segment_mp4(_item["image"], _item.get("audio"), _merge_dir, i + 1))
+                        except Exception as _me:
+                            errors.append(f"第{i + 1}段合并前临时落盘失败：{_me}")
+            if _segs:
+                try:
+                    _merge_out = os.path.join(
+                        auto_merge_path,
+                        f"{_safe_story}_合并视频_{_next_counter(auto_merge_path, f'{_safe_story}_合并视频'):05d}.mp4")
+                    _merged = _merge_mp4_concat(_segs, _merge_out)
+                    print(f"[JZL-管理器] 分段视频已按顺序合并：{_merged}")
+                    if auto_merge_delete:
+                        _del_n = 0
+                        for _p in saved_segments:
+                            try:
+                                os.remove(_p)
+                                _del_n += 1
+                            except Exception:
+                                pass
+                        print(f"[JZL-管理器] 已删除 {_del_n} 个分段视频（合并后清理）")
+                except Exception as _me2:
+                    errors.append(f"合并失败：{_me2}")
+            else:
+                errors.append("合并失败：没有可合并的分段文件")
+            if _merge_dir:
+                shutil.rmtree(_merge_dir, ignore_errors=True)
 
         # ── 输出：图像 + 音频（is_output_list=True，恒为列表） ──
         images, audios = [], []
@@ -1438,20 +2139,20 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
 
 
 class JZL_MiniMaxVideoSaveDistributor(io.ComfyNode):
-    """视频保存分配 — 接收生成总线，拆成 ≤12 组「图像 + 音频」输出，每组接一个 Video Combine。
+    """视频保存分配 — 接收生成总线，拆成 ≤48 组「图像 + 音频」输出，每组接一个 Video Combine。
 
-    与「MiniMax-H3生成管理器」通过无线总线（JZL_BUS_POOL）传输：
+    与「JZL - 🤖 MiniMax-H3短剧生成管理器」通过无线总线（JZL_BUS_POOL）传输：
     生成管理器把每段生成的 (IMAGE, AUDIO) 写入总线池，本节点按组序号读出，
-    输出 12 组端口：图像1/音频1 … 图像12/音频12。
+    输出 48 组端口：图像1/音频1 … 图像48/音频48。
     """
 
-    MAX_GROUPS = 12
+    MAX_GROUPS = 48
 
     @classmethod
     def define_schema(cls):
         inputs = [
             io.String.Input("bus", display_name="生成总线",
-                tooltip="接「MiniMax-H3生成管理器」的「生成总线」输出"),
+                tooltip="接「JZL - 🤖 MiniMax-H3短剧生成管理器」的「生成总线」输出"),
         ]
         outputs = []
         for i in range(cls.MAX_GROUPS):
@@ -1461,7 +2162,7 @@ class JZL_MiniMaxVideoSaveDistributor(io.ComfyNode):
             node_id="JZL_MiniMaxVideoSaveDistributor",
             display_name="JZL - 💾 视频保存分配",
             category="JZL/MiniMax",
-            description="接收生成总线，拆成 ≤12 组「图像+音频」输出，每组接一个 Video Combine。",
+            description="接收生成总线，拆成 ≤48 组「图像+音频」输出，每组接一个 Video Combine。",
             inputs=inputs,
             outputs=outputs,
         )

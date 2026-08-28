@@ -213,23 +213,29 @@
     }
   },
   "JZL_MiniMaxAssetManager": {
-    "display_name": "MiniMax-H3生成管理器",
+    "display_name": "JZL - 🤖 MiniMax-H3短剧生成管理器",
     "inputs": {
+      "run_mode": { "name": "运行模式" },
       "aspect_ratio": { "name": "画幅比例" },
-      "megapixels": { "name": "百万像素 MP" },
-      "display_info": { "name": "分辨率 / 帧数" },
-      "duration": { "name": "时长(秒)" },
-      "scale_factor": { "name": "参考图放大" },
-      "upscale_scale": { "name": "二采放大倍数" },
+      "megapixels": { "name": "百万像素（MP）" },
+      "display_info": { "name": "分辨率/总帧数" },
+      "duration": { "name": "每段视频时长" },
+      "scale_factor": { "name": "参考数值放大" },
+      "upscale_scale": { "name": "二采latent放大" },
       "video_count": { "name": "生成视频数量" },
+      "save_mode": { "name": "保存模式" },
+      "auto_save": { "name": "分段视频自动保存" },
+      "auto_save_path": { "name": "自动保存路径" },
+      "auto_merge": { "name": "分段视频自动合并" },
+      "auto_merge_path": { "name": "合并输出路径" },
+      "auto_merge_delete": { "name": "合并后删除分段视频" },
+      "story_style": { "name": "故事风格" },
+      "story_name": { "name": "故事名称" },
+      "prompt_lang": { "name": "输出语言" },
       "model": { "name": "主模型" },
       "clip": { "name": "CLIP" },
       "vae": { "name": "视觉VAE" },
-      "audio_vae": { "name": "音频VAE" },
-      "prompt_input": { "name": "📝 提示词" }
-    },
-    "outputs": {
-      "0": { "name": "📦 视频保存总线" }
+      "audio_vae": { "name": "音频VAE" }
     }
   },
   "JZL_MiniMaxH3Ref2vaBusOut": {

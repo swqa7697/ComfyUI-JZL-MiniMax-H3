@@ -45,6 +45,7 @@ from .nodes_asset_manager import (
     _write_asset_settings,
     _read_manager_settings,
     _write_manager_settings,
+    _resolve_asset_path,
 )
 
 WEB_DIRECTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "js")
@@ -113,7 +114,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JZL_MiniMaxH3Ref2vaBusOut": "JZL - 🔗 MiniMax H3 ref2va参考总线（打包）",
     "JZL_MiniMaxH3Ref2vaBusIn": "JZL - 🔗 MiniMax H3 ref2va参考总线（解包）",
     "JZL_MiniMaxPromptEnhancer": "JZL - ✨ 提示词增强",
-    "JZL_MiniMaxAssetManager": "MiniMax-H3生成管理器",
+    "JZL_MiniMaxAssetManager": "JZL - 🤖 MiniMax-H3短剧生成管理器",
     "JZL_MiniMaxVideoSaveDistributor": "JZL - 💾 视频保存分配",
 }
 
@@ -194,6 +195,63 @@ async def jzl_api_settings_post(request):
 
 
 # ── 后端端点（漫剧资产管理弹窗读写 + 文件选择 + 图片预览） ─────────────────
+# 路径解析统一用 nodes_asset_manager._resolve_asset_path（预览路由与资产池加载共用）
+
+@PromptServer.instance.routes.post("/jzl/upload_asset")
+async def jzl_upload_asset(request):
+    """浏览器文件上传（替代 tkinter 弹窗，云机/无桌面环境可用）。
+
+    前端用 <input type=file> 选文件后，以 multipart 表单 POST 到此接口
+    （字段：file + kind），按类型分别保存到 ComfyUI input/jzl/image、/video、
+    /audio 三个文件夹，返回 input 相对路径（如 jzl/image/xxx.png）——与官方
+    「加载图像」一致：素材统一导入 input 文件夹、按相对路径引用，工作流可移植。
+    """
+    try:
+        post = await request.post()
+        file = post.get("file")
+        kind = (post.get("kind") or "image").strip()
+        if kind not in {"image", "video", "audio"}:
+            kind = "image"
+        if not file or not getattr(file, "file", None):
+            return web.json_response({"error": "未收到文件"}, status=400)
+        filename = os.path.basename((file.filename or "").strip())
+        if not filename:
+            return web.json_response({"error": "文件名为空"}, status=400)
+        ext = os.path.splitext(filename)[1].lower()
+        allow = {
+            "image": {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"},
+            "video": {".mp4", ".mov", ".webm", ".avi", ".mkv"},
+            "audio": {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wma", ".opus"},
+        }.get(kind, set())
+        if ext not in allow:
+            return web.json_response({"error": f"{kind} 类型不支持扩展名 {ext}"}, status=400)
+        import folder_paths
+        # input/jzl 下按类型分三个英文文件夹：image / video / audio
+        sub = os.path.join("jzl", kind)
+        out_dir = os.path.join(folder_paths.get_input_directory(), sub)
+        os.makedirs(out_dir, exist_ok=True)
+        # 重名自动加 (N)，与官方 /upload/image 一致
+        dest = os.path.join(out_dir, filename)
+        i = 1
+        split = os.path.splitext(filename)
+        while os.path.exists(dest):
+            filename = f"{split[0]} ({i}){split[1]}"
+            dest = os.path.join(out_dir, filename)
+            i += 1
+        with open(dest, "wb") as f:
+            f.write(file.file.read())
+        # input 相对路径（官方 LoadImage 同款），统一正斜杠，跨平台可移植
+        rel = os.path.join(sub, filename).replace("\\", "/")
+        return web.json_response({
+            "ok": True,
+            "path": rel,
+            "name": filename,
+            "subfolder": sub,
+            "type": "input",
+        })
+    except Exception as exc:
+        return web.json_response({"error": f"上传失败：{exc}"}, status=500)
+
 
 @PromptServer.instance.routes.get("/jzl/asset_preview")
 async def jzl_asset_preview(request):
@@ -204,7 +262,8 @@ async def jzl_asset_preview(request):
     ext = os.path.splitext(path)[1].lower()
     if ext not in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
         return web.json_response({"error": "仅支持图片预览"}, status=400)
-    if not os.path.isfile(path):
+    path = _resolve_asset_path(path)
+    if not path:
         return web.json_response({"error": "文件不存在"}, status=404)
     try:
         from PIL import Image, ImageOps
@@ -229,7 +288,8 @@ async def jzl_asset_full(request):
     ext = os.path.splitext(path)[1].lower()
     if ext not in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
         return web.json_response({"error": "仅支持图片"}, status=400)
-    if not os.path.isfile(path):
+    path = _resolve_asset_path(path)
+    if not path:
         return web.json_response({"error": "文件不存在"}, status=404)
     try:
         from PIL import Image, ImageOps
@@ -255,7 +315,8 @@ async def jzl_audio_preview(request):
     ext = os.path.splitext(path)[1].lower()
     if ext not in {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus", ".wma"}:
         return web.json_response({"error": "仅支持音频预览"}, status=400)
-    if not os.path.isfile(path):
+    path = _resolve_asset_path(path)
+    if not path:
         return web.json_response({"error": "文件不存在"}, status=404)
     try:
         return web.FileResponse(path)
@@ -279,10 +340,14 @@ async def jzl_manager_get(request):
         vae_models = _list_models("vae")
         lora_models = _list_models("loras")
         story_styles = list(_story_styles.keys())
+        save_dir = os.path.join(folder_paths.get_output_directory(), "jzl")
+        upscaler_models = folder_paths.get_filename_list("latent_upscale_models")
     except Exception:
         llm_list, mmproj_list, _ch = [], ["None"], ["None"]
         diff_models = clip_models = vae_models = lora_models = []
         story_styles = []
+        save_dir = "output/jzl"
+        upscaler_models = []
     return web.json_response({
         "ok": True,
         "settings": _read_manager_settings(),
@@ -294,6 +359,8 @@ async def jzl_manager_get(request):
         "vae_models": vae_models,
         "lora_models": lora_models,
         "story_styles": story_styles,
+        "save_dir": save_dir,
+        "upscaler_models": upscaler_models,
     })
 
 
@@ -327,6 +394,96 @@ async def jzl_assets_post(request):
         return web.json_response({"ok": False, "error": str(exc)}, status=500)
 
 
+@PromptServer.instance.routes.post("/jzl/export_assets")
+async def jzl_export_assets(request):
+    """把当前素材库导出为 output/jzl/素材库.txt（UTF-8，可读格式，供跨机器导入）。"""
+    try:
+        import folder_paths
+        payload = await request.json()
+        assets = payload.get("assets") if isinstance(payload, dict) else None
+        if not isinstance(assets, dict):
+            return web.json_response({"error": "缺少素材数据"}, status=400)
+        out_dir = os.path.join(folder_paths.get_output_directory(), "jzl")
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, "素材库.txt")
+
+        def _cl(v):
+            return (str(v) if v is not None else "").replace("|", "／").strip()
+
+        lines = [
+            "# JZL 素材库（MiniMax-H3短剧生成管理器）v1",
+            "# 每行：类型 | 编号 | 名称 | 描述 | 路径 | 启用(1/0)",
+            "",
+        ]
+        for key, label in (("images", "图片"), ("videos", "视频"), ("audios", "音频")):
+            lines.append(f"## {label}")
+            for item in assets.get(key) or []:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(f"{_cl(item.get('type'))} | {_cl(item.get('letter'))} | {_cl(item.get('name'))} | "
+                             f"{_cl(item.get('description'))} | {_cl(item.get('path'))} | "
+                             f"{'1' if item.get('enabled', True) else '0'}")
+            lines.append("")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        return web.json_response({"ok": True, "path": path})
+    except Exception as exc:
+        return web.json_response({"error": f"导出失败：{exc}"}, status=500)
+
+
+def _parse_assets_text(text):
+    """把素材库 txt 文本解析为 assets（图片/视频/音频三段）。"""
+    assets = {"images": [], "videos": [], "audios": []}
+    cur = None
+    _map = {"图片": "images", "视频": "videos", "音频": "audios"}
+    text = (text or "").lstrip("\ufeff")  # 容忍带 BOM 的文件
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("## "):
+            cur = _map.get(line[3:].strip())
+            continue
+        if line.startswith("#"):
+            continue
+        if cur is None:
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 6:
+            continue
+        typ, letter, name, desc, p, enabled = parts[:6]
+        assets[cur].append({
+            "type": typ, "letter": letter, "name": name,
+            "description": desc, "path": p,
+            "enabled": enabled == "1",
+        })
+    return assets
+
+
+@PromptServer.instance.routes.post("/jzl/import_assets")
+async def jzl_import_assets(request):
+    """从上传的 txt 文本解析素材库并返回（无 text 时兼容读取默认导出文件）。"""
+    try:
+        import folder_paths
+        payload = {}
+        try:
+            payload = await request.json() or {}
+        except Exception:
+            payload = {}
+        text = payload.get("text") if isinstance(payload, dict) else None
+        if text is None:
+            # 兼容：无文本时读取默认导出文件
+            path = os.path.join(folder_paths.get_output_directory(), "jzl", "素材库.txt")
+            if not os.path.isfile(path):
+                return web.json_response({"error": "output/jzl/素材库.txt 不存在"}, status=404)
+            with open(path, "r", encoding="utf-8-sig") as f:
+                text = f.read()
+        assets = _parse_assets_text(text)
+        return web.json_response({"ok": True, "assets": assets})
+    except Exception as exc:
+        return web.json_response({"error": f"导入失败：{exc}"}, status=500)
+
+
 @PromptServer.instance.routes.post("/jzl/choose_asset_file")
 async def choose_asset_file(request):
     """tkinter 文件选择器：按 kind(image/video/audio) 过滤文件类型"""
@@ -354,3 +511,57 @@ async def choose_asset_file(request):
         return web.json_response({"path": file_path})
     except Exception as e:
         return web.json_response({"path": "", "error": f"弹窗调用失败: {str(e)}"})
+
+
+@PromptServer.instance.routes.post("/jzl/choose_directory")
+async def choose_directory(request):
+    """tkinter 目录选择器：只允许选择 ComfyUI/output 目录内的文件夹（用于 ffmpeg 落盘/合并输出位置）"""
+    if not HAS_TKINTER:
+        return web.json_response({"path": "", "error": "当前环境缺少弹窗依赖"})
+    try:
+        import folder_paths
+        out_root = os.path.abspath(folder_paths.get_output_directory())
+        initial = os.path.join(out_root, "jzl")
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+        dir_path = filedialog.askdirectory(
+            title="选择文件夹（仅限 ComfyUI/output 目录内）",
+            initialdir=initial if os.path.isdir(initial) else out_root)
+        root.destroy()
+        if not dir_path:
+            return web.json_response({"path": ""})
+        ap = os.path.abspath(dir_path)
+        if ap != out_root and not ap.startswith(out_root + os.sep):
+            return web.json_response({"path": "", "error": "只能选择 ComfyUI/output 目录内的文件夹"})
+        return web.json_response({"path": dir_path})
+    except Exception as e:
+        return web.json_response({"path": "", "error": f"弹窗调用失败: {str(e)}"})
+
+
+@PromptServer.instance.routes.get("/jzl/usage_md")
+async def jzl_usage_md(request):
+    """返回使用说明文档内容（不依赖前端静态资源服务，读取扩展目录 docs/USAGE.md）"""
+    try:
+        p = os.path.join(os.path.dirname(__file__), "docs", "USAGE.md")
+        with open(p, "r", encoding="utf-8") as f:
+            return web.Response(text=f.read(), content_type="text/plain; charset=utf-8")
+    except Exception as e:
+        return web.Response(status=404, text=f"文档读取失败: {str(e)}")
+
+
+@PromptServer.instance.routes.get("/jzl/usage_qr/{name}")
+async def jzl_usage_qr(request):
+    """返回 docs 目录下的收款二维码图片（OpenPose 式 FileResponse，不依赖前端静态服务）。
+
+    用法：/jzl/usage_qr/DS01.png —— 只允许访问 docs 目录内的文件。
+    """
+    name = os.path.basename(request.match_info.get("name", ""))
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "docs"))
+    full = os.path.abspath(os.path.join(base, name))
+    if not full.startswith(base + os.sep) or not os.path.isfile(full):
+        return web.json_response({"error": "Not found"}, status=404)
+    ext = os.path.splitext(name)[1].lower()
+    ctype = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+             "webp": "image/webp", "gif": "image/gif"}.get(ext, "application/octet-stream")
+    return web.FileResponse(full, headers={"Content-Type": ctype})

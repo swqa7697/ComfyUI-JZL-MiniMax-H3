@@ -79,6 +79,20 @@ SEGMENT_COUNT_OPTIONS = {
 }
 
 
+def _resolve_segment_count(label):
+    """分段数解析：标准标签（「6段」）→ SEGMENT_COUNT_OPTIONS；数字字符串（「6」/「1」）→ 精确整数；否则 4。
+
+    管理器把 video_count 的任意 1-48 精确传给剧本处理器（不限于 4/6/9/12/16/20/24）。
+    """
+    if isinstance(label, str) and label in SEGMENT_COUNT_OPTIONS:
+        return SEGMENT_COUNT_OPTIONS[label]
+    if isinstance(label, str) and label.strip().isdigit():
+        return max(1, min(48, int(label.strip())))
+    if isinstance(label, (int, float)):
+        return max(1, min(48, int(label)))
+    return 4
+
+
 # ═══════════════════════════════════════════════════════════════
 #  V2 融合骨架（剧本与镜头处理器专用）
 #  占位符: {Mode_Instruction} {Story_Style} {Segment_Count}
@@ -197,9 +211,12 @@ def _build_material_table(ref_image_intro, ref_video_intro, ref_audio_intro):
             blocks.append(f"【{kind}】\n" + "\n".join(rows))
     if not blocks:
         return ""
-    return ("## 3.5 素材标签对照表（CRITICAL — slots 只能从这里取「类型:槽位名」）\n"
+    return ("## 3.5 素材标签对照表（CRITICAL — 唯一素材来源，slots 只能从这里取「类型:槽位名」）\n"
             + "\n".join(blocks)
-            + "\n\n- 调度指令 slots 写「类型:槽位名」，如 场景:场景A、角色:角色A、道具:道具A、视频:视频A、音频:音频A，严禁写素材名（孙悟空）或自造槽位。\n"
+            + "\n\n## 3.6 素材白名单（CRITICAL — 顶部字段与调度严禁引用对照表之外的素材）\n"
+            "- 每段顶部元数据（**角色**/**场景**/**道具**/**视频**/**音频**/**音效**/**音乐**/**其他**）里列出的名称，必须全部来自上方对照表中的「素材名」或「类型:槽位名」（如 场景:场景B、角色:角色A），严禁自造或新增。\n"
+            "- 剧情需要但对照表中没有的素材（如某道具/场景/角色），一律不得写入顶部字段或调度 slots：该字段写「无」，只允许在 detailed_description 剧情正文中作环境描写。\n"
+            "- 调度指令 slots 写「类型:槽位名」，如 场景:场景A、角色:角色A、道具:道具A、视频:视频A、音频:音频A，严禁写素材名（孙悟空）或自造槽位。\n"
             "- subject_definitions 写素材名（<Subject N> 是 <Picture N> 中的孙悟空），括号里的外貌描述原样复述。\n"
             "- 音频槽位对应说话人音色：本段谁开口说话，AUDIO_INSTRUCTION.slots 就写对应角色的「音频:音频X」，无对话分段音频 slots 写空。")
 
@@ -232,7 +249,7 @@ def build_shot_prompt(
 
     mode_instruction = _mi.get(mode, list(_mi.values())[0] if _mi else "")
     style = _ss.get(story_style, list(_ss.values())[0] if _ss else "")
-    segment_count = SEGMENT_COUNT_OPTIONS.get(segment_count_label, 4)
+    segment_count = _resolve_segment_count(segment_count_label)
     segment_duration = max(4, min(15, int(segment_duration or 8)))
 
     schedule_rules = _build_schedule_rules(lang, enable_scene, enable_props, enable_video, enable_audio)
