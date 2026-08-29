@@ -654,15 +654,29 @@ def _run_second_sampling(model, positive, samples, sample_decode, second, upscal
     video_latent, audio_latent = sep.args[0], sep.args[1]
 
     # 2) 视频 latent 放大（scale by multiplier，倍数=二采放大；对齐 32）
-    up = MinimaxH3LatentUpscaler3D.execute(
-        latent=video_latent,
-        model_name=second.get("upscaler_model") or "minimax_h3_latent_upscaler_3d_fp32.pth",
-        mode={"mode": "scale by multiplier", "scale": float(upscale_scale or 1.0)},
-        align=32,
-        enable_chunking=bool(second.get("enable_chunking", True)),
-        device=second.get("device") or "cuda",
-        precision=second.get("precision") or "fp32",
-    )
+    #    签名自适应：云机可能是官方原版（enable_temporal_chunking/force_unload），
+    #    本地是定制版（enable_chunking）——用 inspect 检测实际参数名，按需传参，兼容两者。
+    try:
+        import inspect as _inspect
+        _params = set(_inspect.signature(MinimaxH3LatentUpscaler3D.execute).parameters.keys())
+    except Exception:
+        _params = set()
+    _up_kwargs = {
+        "latent": video_latent,
+        "model_name": second.get("upscaler_model") or "minimax_h3_latent_upscaler_3d_fp32.pth",
+        "mode": {"mode": "scale by multiplier", "scale": float(upscale_scale or 1.0)},
+        "align": 32,
+        "device": second.get("device") or "cuda",
+        "precision": second.get("precision") or "fp32",
+    }
+    _chunk = bool(second.get("enable_chunking", True))
+    if "enable_chunking" in _params:
+        _up_kwargs["enable_chunking"] = _chunk
+    if "enable_temporal_chunking" in _params:
+        _up_kwargs["enable_temporal_chunking"] = _chunk
+    if "force_unload" in _params:
+        _up_kwargs["force_unload"] = True
+    up = MinimaxH3LatentUpscaler3D.execute(**_up_kwargs)
     up_latent = up.args[0]
 
     # 3) 合并音视频潜空间
@@ -810,13 +824,18 @@ def _next_counter(folder, prefix):
 
 
 def _save_segment_mp4(image, audio, out_dir, index, story_name="story", counter=1, fps=VIDEO_FPS):
-    """把单段 (IMAGE [T,H,W,C] float 0-1, AUDIO dict|None) 用 ffmpeg 立即落盘 mp4。
+    """把单段 (IMAGE [T,H,W,C] float 0-1, AUDIO dict|None) 用 ffmpeg 落盘 mp4（临时 raw 文件方案）。
 
     文件名规则：{故事名}_分段{序号}_{5位编号}.mp4（编号按目录已有文件递增）。
     返回保存的文件绝对路径；失败抛异常（由调用方捕获并记录日志）。
+    - 帧数据先整体写入临时 rawvideo 文件，再让 ffmpeg 读取——不经过 stdin 管道，
+      彻底规避 ffmpeg 提前退出导致的「flush of closed file」竞态（Linux 下 stdin 行为与 Windows 不同）；
     - libx264 不可用（精简版 ffmpeg）时自动回退 mpeg4；
-    - ffmpeg 启动即失败时读取 stderr 给出真实原因（避免「flush of closed file」误导）。
+    - ffmpeg 出错时给出 stderr 真实原因。
     """
+    if not getattr(_save_segment_mp4, "_jzl_ver_printed", False):
+        _save_segment_mp4._jzl_ver_printed = True
+        print(f"[JZL-管理器] 落盘模块加载路径：{os.path.abspath(__file__)}")
     if image is None:
         raise ValueError("图像为空，无法落盘")
     img = image.detach().cpu().float().clamp(0.0, 1.0).mul(255.0).to(torch.uint8).numpy()
@@ -827,59 +846,62 @@ def _save_segment_mp4(image, audio, out_dir, index, story_name="story", counter=
     path = os.path.join(out_dir, f"{story_name}_分段{int(index)}_{int(counter):05d}.mp4")
     ff = _ffmpeg_bin()
 
-    def _run(vcodec, quality_args):
-        cmd = [ff, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
-               "-s", f"{W}x{H}", "-r", str(fps), "-i", "-"]
-        tmp_wav = None
-        if audio is not None:
-            wf = audio.get("waveform")
-            if wf is not None:
-                sr = int(audio.get("sample_rate", 32000))
-                tmp_wav = os.path.join(tempfile.gettempdir(), f"_jzl_seg{int(index)}_{os.getpid()}.wav")
-                _write_wav(wf, sr, tmp_wav)
-                cmd += ["-i", tmp_wav, "-c:a", "aac", "-b:a", "192k"]
-        cmd += ["-c:v", vcodec, "-pix_fmt", "yuv420p"] + quality_args + ["-movflags", "+faststart"]
-        if tmp_wav:
-            cmd += ["-shortest"]
-        cmd += [path]
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.PIPE)
-        try:
-            # 若 ffmpeg 启动即失败（缺编码器等），subprocess 会立刻关闭 stdin，
-            # 此时再 write 会报「flush of closed file」——提前检查并给出 stderr 真实原因
-            if proc.stdin is None or proc.stdin.closed:
-                _err = (proc.stderr.read() or b"").decode("utf-8", "ignore")[-600:]
-                proc.wait()
-                raise RuntimeError(f"ffmpeg 启动即失败（{vcodec}）：{_err.strip() or '未知错误（请检查 ffmpeg 安装）'}")
-            for i in range(T):
-                proc.stdin.write(img[i].tobytes())
-            proc.stdin.close()
-            _, err = proc.communicate()
-            if proc.returncode != 0:
-                raise RuntimeError(f"ffmpeg 落盘失败（{vcodec}）：{err.decode('utf-8', 'ignore')[-600:]}")
-        finally:
-            if tmp_wav and os.path.exists(tmp_wav):
-                try:
-                    os.remove(tmp_wav)
-                except Exception:
-                    pass
-        return path
-
+    # 临时 rawvideo 文件（视频帧整体写入，避免 stdin 管道竞态）
+    raw_path = os.path.join(out_dir, f"._jzl_raw_{int(index)}_{os.getpid()}.raw")
     try:
-        return _run("libx264", ["-crf", "18"])
-    except Exception as e:
-        msg = str(e)
-        # libx264 编码器缺失/不支持 → 回退 mpeg4（兼容性最广，mp4 容器仍可带 aac 音频）
-        if "libx264" in msg or "encoder" in msg.lower():
-            print(f"[JZL-管理器] libx264 不可用，回退 mpeg4 编码落盘：{msg}")
+        with open(raw_path, "wb") as _rf:
+            _rf.write(img.tobytes())
+
+        def _run(vcodec, quality_args):
+            cmd = [ff, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                   "-s", f"{W}x{H}", "-r", str(fps), "-i", raw_path]
+            tmp_wav = None
             try:
-                return _run("mpeg4", ["-q:v", "5"])
-            except Exception as e2:
-                raise RuntimeError(f"ffmpeg 落盘失败（libx264 与 mpeg4 均不可用）：{msg} | {e2}")
-        # 其他错误（如 ffmpeg 未安装）直接抛出并附诊断
-        if "No such file" in msg or "not found" in msg.lower() or "Errno 2" in msg:
-            raise RuntimeError(f"未找到 ffmpeg 可执行文件：{ff}（请安装 ffmpeg 或 pip install imageio-ffmpeg）")
-        raise
+                if audio is not None:
+                    wf = audio.get("waveform")
+                    if wf is not None:
+                        sr = int(audio.get("sample_rate", 32000))
+                        tmp_wav = os.path.join(tempfile.gettempdir(), f"_jzl_seg{int(index)}_{os.getpid()}.wav")
+                        _write_wav(wf, sr, tmp_wav)
+                        cmd += ["-i", tmp_wav, "-c:a", "aac", "-b:a", "192k"]
+                cmd += ["-c:v", vcodec, "-pix_fmt", "yuv420p"] + quality_args + ["-movflags", "+faststart"]
+                cmd += [path]
+                try:
+                    _p = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=600)
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError(f"ffmpeg 落盘超时（{vcodec}）：{path}")
+                if _p.returncode != 0:
+                    _err = (_p.stderr or b"").decode("utf-8", "ignore")[-600:]
+                    raise RuntimeError(f"ffmpeg 落盘失败（{vcodec}）：{_err.strip() or '未知错误'}")
+                return path
+            finally:
+                if tmp_wav and os.path.exists(tmp_wav):
+                    try:
+                        os.remove(tmp_wav)
+                    except Exception:
+                        pass
+
+        try:
+            return _run("libx264", ["-crf", "18"])
+        except Exception as e:
+            msg = str(e)
+            # libx264 编码器缺失/不支持 → 回退 mpeg4（兼容性最广，mp4 容器仍可带 aac 音频）
+            if "libx264" in msg or "encoder" in msg.lower():
+                print(f"[JZL-管理器] libx264 不可用，回退 mpeg4 编码落盘：{msg}")
+                try:
+                    return _run("mpeg4", ["-q:v", "5"])
+                except Exception as e2:
+                    raise RuntimeError(f"ffmpeg 落盘失败（libx264 与 mpeg4 均不可用）：{msg} | {e2}")
+            # 其他错误（如 ffmpeg 未安装）直接抛出并附诊断
+            if "No such file" in msg or "not found" in msg.lower() or "Errno 2" in msg:
+                raise RuntimeError(f"未找到 ffmpeg 可执行文件：{ff}（请安装 ffmpeg 或 pip install imageio-ffmpeg）")
+            raise
+    finally:
+        try:
+            if os.path.exists(raw_path):
+                os.remove(raw_path)
+        except Exception:
+            pass
 
 
 def _concat_escape(p):
