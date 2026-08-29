@@ -969,15 +969,45 @@ function renderAssetSection(c, kind, list, title) {
     const fireEdit = () => c.dispatchEvent(new Event("change", { bubbles: true }));
     c.append(makeSectionTitle(title));
     const box = el("div", "");
+    // 拖拽排序：拖动某张卡片放到另一张上即「交换位置」（同一类型内调整顺序）
+    let dragFrom = -1;
+    const wireDrag = (card, i) => {
+        card.draggable = true;
+        card.style.cursor = "grab";
+        card.addEventListener("dragstart", (e) => {
+            dragFrom = i;
+            try { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(i)); } catch (_) {}
+        });
+        card.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            try { e.dataTransfer.dropEffect = "move"; } catch (_) {}
+        });
+        card.addEventListener("drop", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (dragFrom >= 0 && dragFrom !== i && list[dragFrom] && list[i]) {
+                const tmp = list[dragFrom];
+                list[dragFrom] = list[i];
+                list[i] = tmp;
+                dragFrom = -1;
+                renderList();
+                fireEdit();
+            }
+            dragFrom = -1;
+        });
+        card.addEventListener("dragend", () => { dragFrom = -1; });
+    };
     const renderList = () => {
         box.innerHTML = "";
         list.forEach((item, i) => {
             const isLast = i === list.length - 1;
-            box.append(makeAssetCard(kind, i, item, list, fireEdit, () => {
+            const card = makeAssetCard(kind, i, item, list, fireEdit, () => {
                 list.splice(i, 1);
                 renderList();
                 fireEdit();
-            }, isLast, renderList));
+            }, isLast, renderList);
+            wireDrag(card, i);
+            box.append(card);
         });
         const addBtn = el("button", "margin-top:4px;width:100%;padding:6px;background:#2a3a4a;color:#9fc3e8;border:1px dashed #5b9bd5;border-radius:6px;font-size:12px;cursor:pointer;", `+ 添加${KIND_LABEL[kind]}`);
         addBtn.addEventListener("click", () => {
@@ -1147,6 +1177,36 @@ function setupInternalPrompt(node, box, ipWidget) {
     box.addEventListener("keyup", () => { promptCaretPos = caretOffset(box); });
     box.addEventListener("click", () => { promptCaretPos = caretOffset(box); });
     box.addEventListener("change", syncInternal);
+    // 粘贴：阻止 ComfyUI 画布把剪贴板里的「节点 JSON」粘贴到画布，只插入纯文本到提示词
+    box.addEventListener("paste", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const text = (e.clipboardData || window.clipboardData)?.getData("text/plain") || "";
+        if (!text) return;
+        const sel = window.getSelection();
+        let range = null;
+        if (sel && sel.rangeCount) {
+            const r0 = sel.getRangeAt(0);
+            if (box.contains(r0.startContainer)) range = r0;
+        }
+        if (!range) {
+            range = document.createRange();
+            range.selectNodeContents(box);
+            range.collapse(false);
+        }
+        const frag = document.createDocumentFragment();
+        String(text).replace(/\r\n/g, "\n").split("\n").forEach((line, idx) => {
+            if (idx > 0) frag.appendChild(document.createElement("br"));
+            frag.appendChild(document.createTextNode(line));
+        });
+        range.deleteContents();
+        range.insertNode(frag);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+        box.dispatchEvent(new Event("change"));
+    });
     box.addEventListener("blur", () => setTimeout(closeMentionMenu, 150));
     // internal_prompt 是内部存储字段：拒绝接线（幽灵防护）
     const origCC = node.onConnectionsChange;
@@ -2450,7 +2510,29 @@ app.registerExtension({
                 widget.options.serialize = false;
                 widget.options.getMinHeight = () => 300;
                 widget.options.getHeight = () => "100%";
+                // 对齐 Director：computeLayoutSize 返回 minWidth（参与节点最小宽度计算，
+                // 属性面板等重排不会把节点/overlay 算窄）
+                widget.computeLayoutSize = () => ({ minHeight: 300, maxHeight: undefined, minWidth: 600 });
+                // Director 同款：DOM widget 自身每次被绘制时同步宽度（最精准时机，绘制前宽度已对，杜绝闪压）；
+                // afterResize 在节点尺寸变化后同步
+                widget.options.onDraw = () => { try { syncDomWidth(); } catch (_) {} };
+                widget.options.afterResize = () => { try { syncDomWidth(); } catch (_) {} };
             }
+
+            // —— 关键防挤压（对齐 MiniMaxH3Director 的 ensureDirectorDomWidgetWidth + patchDirectorDomWidgetLayout）：
+            //    ComfyUI 的 DomWidgets 用 widget.width ?? node.width 计算 overlay 宽度，属性面板等重排时
+            //    若只依赖 node.width 会被算错压缩。做法：主动把 widget.width 钉为节点完整宽度，并在
+            //    canvas.onDrawForeground（每帧绘制）里持续同步——任何重排触发重绘后，下一帧即纠正，
+            //    打开属性面板也不会再挤压 UI。——
+            const syncDomWidth = () => {
+                try {
+                    const fullW = Number.isFinite(self.size?.[0]) ? self.size[0] : 0;
+                    if (widget && fullW && widget.width !== fullW) widget.width = fullW;
+                } catch (_) {}
+            };
+            syncDomWidth();
+            self._jzlSyncWidth = syncDomWidth;
+            self._jzlDomWidget = widget;
 
             // 节点 resize 时触发重绘，让 DOM widget（输入框）跟随高度
             let _resizeTimer = null;
@@ -2458,6 +2540,7 @@ app.registerExtension({
             self.onResize = function (...args) {
                 const rr = prevOnResize?.apply(this, args);
                 try {
+                    syncDomWidth();  // 节点尺寸一变立即把 overlay 宽度钉为节点宽度（防挤压）
                     self.setDirtyCanvas?.(true, true);
                     // 节点宽度调整期间会频繁触发 → 防抖：调整结束后 200ms，按「最终宽度」重新渲染资产窗
                     // 并重算节点高度，保证换行后的多行素材全部显示、节点自动增高（修复调窄后第三行被吞）
@@ -2476,6 +2559,7 @@ app.registerExtension({
             const refreshSize = () => {
                 try {
                     lockMinWidth();  // 初始化尺寸重算时同时锁定最小宽度 600
+                    syncDomWidth();  // 同步 overlay 宽度 = 节点宽度（防属性面板挤压）
                     const size = self.computeSize?.();
                     if (Array.isArray(size) && size.length >= 2 && Number.isFinite(size[1])) {
                         // 只在节点高度未设置/过小时初始化，避免覆盖用户拖拽或工作流保存的高度；
@@ -2490,6 +2574,27 @@ app.registerExtension({
             refreshSize();
             requestAnimationFrame(refreshSize);
             setTimeout(refreshSize, 50);
+
+            // 每帧绘制前景时同步本节点 overlay 宽度（对齐 Director 的 patchDirectorDomWidgetLayout）：
+            // 属性面板等任何画布重排触发重绘后，下一帧即把 widget.width 纠正为节点宽度，杜绝挤压
+            try {
+                const _cv = self.graph?.canvas ?? window.app?.canvas;
+                if (_cv && !_cv.__jzlDomWidthPatch) {
+                    _cv.__jzlDomWidthPatch = true;
+                    const _prevDraw = _cv.onDrawForeground;
+                    _cv.onDrawForeground = function (ctx) {
+                        const _r = _prevDraw?.apply(this, arguments);
+                        try {
+                            const _g = self.graph ?? (window.app && window.app.graph);
+                            const _ns = _g ? (_g._nodes || _g.nodes || []) : [];
+                            for (const _n of _ns) {
+                                if (_n && _n._jzlDomWidget && _n._jzlSyncWidth) _n._jzlSyncWidth();
+                            }
+                        } catch (_) {}
+                        return _r;
+                    };
+                }
+            } catch (_) {}
             return r;
         };
 
