@@ -2253,6 +2253,8 @@ app.registerExtension({
                 }
                 // configure 可能重建端口 → 兜底清理幽灵接口（内部存储字段无端口）
                 setTimeout(killGhost, 0);
+                // 工作流加载后按真实 DOM 重算尺寸 + 锁定最小宽度（防版本差异导致的漂移）
+                setTimeout(() => { try { lockMinWidth(); refreshSize?.(); } catch (_) {} }, 120);
                 return r;
             };
 
@@ -2422,13 +2424,19 @@ app.registerExtension({
                 return r;
             };
 
-            // 节点最小宽度 600（防止缩得太窄；litegraph 用 min_width，兼容两种属性并强制初始宽度）
+            // 节点最小宽度 600：min_width 在新版前端可能不生效（只在拖动时 clamp，初始化/加载不撑宽），
+            // 这里主动兜底锁定：创建 / 工作流加载 / 缩放 / 拖拽后都检查，宽度 < 600 一律拉回 600
             self.min_width = 600;
             self.minWidth = 600;
-            if (!self.size || !Number.isFinite(self.size[0]) || self.size[0] < 600) {
-                const _h0 = Number.isFinite(self.size?.[1]) ? self.size[1] : 300;
-                self.setSize?.([600, _h0]);
-            }
+            const lockMinWidth = () => {
+                try {
+                    const w = Number.isFinite(self.size?.[0]) ? self.size[0] : 0;
+                    if (w >= 600) return;
+                    const h = Number.isFinite(self.size?.[1]) ? self.size[1] : 300;
+                    self.setSize?.([600, Math.max(h, 300)]);
+                } catch (_) {}
+            };
+            lockMinWidth();
 
             // 3. addDOMWidget：不 unshift；固定高度（按钮区 + 提示词 + 资产窗）
             const widget = self.addDOMWidget?.("jzl_manager", "JZL_MANAGER", container, {
@@ -2455,6 +2463,7 @@ app.registerExtension({
                     // 并重算节点高度，保证换行后的多行素材全部显示、节点自动增高（修复调窄后第三行被吞）
                     clearTimeout(_resizeTimer);
                     _resizeTimer = setTimeout(() => {
+                        lockMinWidth();  // 拖拽后锁定最小宽度 600（拖不窄）
                         renderAssetWindow(windowBox, self.__promptBox, self);  // 内部会调 windowBox.__onResize 重算高度
                         self.__updateAlignStatus?.();
                         self.setDirtyCanvas?.(true, true);
@@ -2466,6 +2475,7 @@ app.registerExtension({
             // 4. 刷新节点尺寸（隐藏 widget 后需重算），并多次调用应对异步布局
             const refreshSize = () => {
                 try {
+                    lockMinWidth();  // 初始化尺寸重算时同时锁定最小宽度 600
                     const size = self.computeSize?.();
                     if (Array.isArray(size) && size.length >= 2 && Number.isFinite(size[1])) {
                         // 只在节点高度未设置/过小时初始化，避免覆盖用户拖拽或工作流保存的高度；

@@ -775,13 +775,13 @@ class JZL_MiniMax_ScriptProcessor:
 
         合法格式（与调度节点 _match_name 的宽松匹配一致）：
         - 「类型:槽位名」；类型 = 场景/角色/道具/视频/音频（或 scene/character/prop/video/audio）
-        - 槽位名 = A~H 字母（如「音频:D」）或 类型前缀+A~H（如「音频:音频D」）
+        - 槽位名 = A~Z 字母（如「音频:D」）或 类型前缀+A~Z（如「音频:音频D」）
         - 尾冒号/尾空格自动容错
         """
         warnings = []
         zh_types = ("场景", "角色", "道具", "视频", "音频")
         en_types = ("scene", "character", "prop", "video", "audio")
-        name_pat = re.compile(r'^(?:场景|角色|道具|视频|音频|scene|character|prop|video|audio)?[A-H]$', re.IGNORECASE)
+        name_pat = re.compile(r'^(?:场景|角色|道具|视频|音频|scene|character|prop|video|audio)?[A-Z]$', re.IGNORECASE)
         for label, info in (("场景", scene_info), ("视频", video_info), ("音频", audio_info)):
             try:
                 d = json.loads(info) if isinstance(info, str) else (info or {})
@@ -794,7 +794,7 @@ class JZL_MiniMax_ScriptProcessor:
                 typ = typ.strip()
                 name = name.strip().rstrip(":：")
                 if (typ not in zh_types and typ not in en_types) or not name_pat.match(name):
-                    warnings.append(f"[⚠️ 槽位名异常] 第{shot_num if shot_num else '?'}段 {label}调度 slots 含「{slot}」——槽位名必须是 A~H 字母（如「音频:D」）或 类型+A~H（如「音频:音频D」），不是素材名/描述")
+                    warnings.append(f"[⚠️ 槽位名异常] 第{shot_num if shot_num else '?'}段 {label}调度 slots 含「{slot}」——槽位名必须是 A~Z 字母（如「音频:D」）或 类型+A~Z（如「音频:音频D」），不是素材名/描述")
         return warnings
 
     @staticmethod

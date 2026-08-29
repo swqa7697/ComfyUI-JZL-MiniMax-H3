@@ -814,6 +814,8 @@ def _save_segment_mp4(image, audio, out_dir, index, story_name="story", counter=
 
     文件名规则：{故事名}_分段{序号}_{5位编号}.mp4（编号按目录已有文件递增）。
     返回保存的文件绝对路径；失败抛异常（由调用方捕获并记录日志）。
+    - libx264 不可用（精简版 ffmpeg）时自动回退 mpeg4；
+    - ffmpeg 启动即失败时读取 stderr 给出真实原因（避免「flush of closed file」误导）。
     """
     if image is None:
         raise ValueError("图像为空，无法落盘")
@@ -823,39 +825,61 @@ def _save_segment_mp4(image, audio, out_dir, index, story_name="story", counter=
         img = img[:, :, :, :3]  # 只取 RGB（ffmpeg rgb24 需 3 通道）
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"{story_name}_分段{int(index)}_{int(counter):05d}.mp4")
-
     ff = _ffmpeg_bin()
-    cmd = [ff, "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
-           "-s", f"{W}x{H}", "-r", str(fps), "-i", "-"]
-    tmp_wav = None
-    if audio is not None:
-        wf = audio.get("waveform")
-        if wf is not None:
-            sr = int(audio.get("sample_rate", 32000))
-            tmp_wav = os.path.join(tempfile.gettempdir(), f"_jzl_seg{int(index)}_{os.getpid()}.wav")
-            _write_wav(wf, sr, tmp_wav)
-            cmd += ["-i", tmp_wav, "-c:a", "aac", "-b:a", "192k"]
-    cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-movflags", "+faststart"]
-    if tmp_wav:
-        cmd += ["-shortest"]
-    cmd += [path]
 
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.PIPE)
+    def _run(vcodec, quality_args):
+        cmd = [ff, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+               "-s", f"{W}x{H}", "-r", str(fps), "-i", "-"]
+        tmp_wav = None
+        if audio is not None:
+            wf = audio.get("waveform")
+            if wf is not None:
+                sr = int(audio.get("sample_rate", 32000))
+                tmp_wav = os.path.join(tempfile.gettempdir(), f"_jzl_seg{int(index)}_{os.getpid()}.wav")
+                _write_wav(wf, sr, tmp_wav)
+                cmd += ["-i", tmp_wav, "-c:a", "aac", "-b:a", "192k"]
+        cmd += ["-c:v", vcodec, "-pix_fmt", "yuv420p"] + quality_args + ["-movflags", "+faststart"]
+        if tmp_wav:
+            cmd += ["-shortest"]
+        cmd += [path]
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE)
+        try:
+            # 若 ffmpeg 启动即失败（缺编码器等），subprocess 会立刻关闭 stdin，
+            # 此时再 write 会报「flush of closed file」——提前检查并给出 stderr 真实原因
+            if proc.stdin is None or proc.stdin.closed:
+                _err = (proc.stderr.read() or b"").decode("utf-8", "ignore")[-600:]
+                proc.wait()
+                raise RuntimeError(f"ffmpeg 启动即失败（{vcodec}）：{_err.strip() or '未知错误（请检查 ffmpeg 安装）'}")
+            for i in range(T):
+                proc.stdin.write(img[i].tobytes())
+            proc.stdin.close()
+            _, err = proc.communicate()
+            if proc.returncode != 0:
+                raise RuntimeError(f"ffmpeg 落盘失败（{vcodec}）：{err.decode('utf-8', 'ignore')[-600:]}")
+        finally:
+            if tmp_wav and os.path.exists(tmp_wav):
+                try:
+                    os.remove(tmp_wav)
+                except Exception:
+                    pass
+        return path
+
     try:
-        for i in range(T):
-            proc.stdin.write(img[i].tobytes())
-        proc.stdin.close()
-        _, err = proc.communicate()
-        if proc.returncode != 0:
-            raise RuntimeError(f"ffmpeg 落盘失败：{err.decode('utf-8', 'ignore')[-500:]}")
-    finally:
-        if tmp_wav and os.path.exists(tmp_wav):
+        return _run("libx264", ["-crf", "18"])
+    except Exception as e:
+        msg = str(e)
+        # libx264 编码器缺失/不支持 → 回退 mpeg4（兼容性最广，mp4 容器仍可带 aac 音频）
+        if "libx264" in msg or "encoder" in msg.lower():
+            print(f"[JZL-管理器] libx264 不可用，回退 mpeg4 编码落盘：{msg}")
             try:
-                os.remove(tmp_wav)
-            except Exception:
-                pass
-    return path
+                return _run("mpeg4", ["-q:v", "5"])
+            except Exception as e2:
+                raise RuntimeError(f"ffmpeg 落盘失败（libx264 与 mpeg4 均不可用）：{msg} | {e2}")
+        # 其他错误（如 ffmpeg 未安装）直接抛出并附诊断
+        if "No such file" in msg or "not found" in msg.lower() or "Errno 2" in msg:
+            raise RuntimeError(f"未找到 ffmpeg 可执行文件：{ff}（请安装 ffmpeg 或 pip install imageio-ffmpeg）")
+        raise
 
 
 def _concat_escape(p):
