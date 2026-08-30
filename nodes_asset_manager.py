@@ -369,6 +369,71 @@ def _write_manager_settings(data):
         return False
 
 
+# ── 重拍模式：最后一次 LLM 拆解/增强提示词 保存 / 读取 / 校验 ──────
+# 拆解/增强后的完整提示词（含 [SHOT_START]~[SHOT_END] 分段）保存到 output/jzl/最近提示词.json，
+# 供重拍模式「提示词选择」加载（跨刷新持久，独立于工作流内的 internal_prompt）。
+
+def _last_script_file():
+    try:
+        base = os.path.abspath(folder_paths.get_output_directory())
+    except Exception:
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "..", "output")
+    d = os.path.join(base, "jzl")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(d, "最近提示词.json")
+
+
+def _save_last_script(story_name, script):
+    """保存最后一次 LLM 拆解/增强后的完整提示词（供重拍模式「提示词选择」加载）。"""
+    try:
+        data = {
+            "story_name": (story_name or "").strip(),
+            "script": script or "",
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with open(_last_script_file(), "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[JZL-管理器] 保存最近提示词失败：{e}")
+
+
+def _load_last_script():
+    """读取最后一次拆解/增强提示词，返回 dict（无则 None）。含 shots 段落数组。"""
+    try:
+        # utf-8-sig 容错：素材库/外部工具可能以带 BOM 的 UTF-8 写入（如 PowerShell 默认），
+        # 与 /jzl/import_assets 的素材库解析保持一致的容错策略
+        with open(_last_script_file(), "r", encoding="utf-8-sig") as f:
+            d = json.load(f)
+        if not d or not isinstance(d.get("script"), str) or not d["script"].strip():
+            return None
+        shots = [s.strip() for s in re.findall(r'\[SHOT_START\](.*?)\[SHOT_END\]', d["script"], re.DOTALL)]
+        d["shots"] = shots
+        d["shot_count"] = len(shots)
+        return d
+    except Exception:
+        return None
+
+
+def _validate_script(script, video_count=6):
+    """生产规范校验：重拍模式加载提示词时检查，返回错误/警告描述列表（空 = 通过）。"""
+    errs = []
+    if not script or not script.strip():
+        return ["提示词为空"]
+    shots = [s.strip() for s in re.findall(r'\[SHOT_START\](.*?)\[SHOT_END\]', script or "", re.DOTALL)]
+    if not shots:
+        return ["未识别到 [SHOT_START]~[SHOT_END] 分段（拆解结果可能损坏）"]
+    n = max(1, min(48, int(video_count or 6)))
+    if len(shots) != n:
+        errs.append(f"识别到 {len(shots)} 段，与当前「生成视频数量」{n} 不一致")
+    noh3 = [i + 1 for i, s in enumerate(shots) if "===H3_PROMPT===" not in s]
+    if noh3:
+        errs.append(f"第 {', '.join(str(x) for x in noh3[:6])}{'…' if len(noh3) > 6 else ''} 段缺少 ===H3_PROMPT=== 标记")
+    return errs
+
+
 # ── 生成核心：分段 / 编码 / 采样 / 解码 ──────────────────────
 
 def _slot_name(slot):
@@ -1731,7 +1796,7 @@ def _load_video(path):
 
 
 class JZL_MiniMaxAssetManager(io.ComfyNode):
-    """JZL - 🤖 MiniMax-H3短剧生成管理器 — 生成模式切换 + 模型/资产/参数/采样解码配置，输出 BUS。
+    """JZL - 🤖 MiniMax-H3短剧导演台 — 生成模式切换 + 模型/资产/参数/采样解码配置，输出 BUS。
 
     融合原 1140 工作流核心链路：
     分段处理中心 → 列表分发(每段独立提示词) → 场景/视频/音频调度(从资产池按名取参考)
@@ -1746,7 +1811,7 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
         story_styles = _story_style_options()
         return io.Schema(
             node_id="JZL_MiniMaxAssetManager",
-            display_name="JZL - 🤖 MiniMax-H3短剧生成管理器",
+            display_name="JZL - 🤖 MiniMax-H3短剧导演台",
             category="JZL/MiniMax",
             description="MiniMax-H3 生成管理器：分段 + 调度 + 编码 + 采样 + 解码一体化，输出生成总线。",
             inputs=[
@@ -1904,6 +1969,9 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
                 processed, p_err2 = _run_prompt_enhancer(processed, manager, duration, story_style, prompt_lang, llm_seed, story_name, gen_dir)
                 if p_err2:
                     print(f"[JZL-管理器] {p_err2}")
+            # 重拍模式：保存最后一次 LLM 处理后的完整提示词（供「提示词选择」加载）
+            if processed:
+                _save_last_script(story_name, processed)
             _llm_finish(enhance)
             _seed_ui = _build_seed_ui(manager, enhance, seed_control, current_seed, llm_seed)
             return io.NodeOutput([], [], processed, ui=_seed_ui)
@@ -1961,6 +2029,10 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
         prompt_input = _normalize_scene_slots(prompt_input, slot_to_asset)
         # 幻想素材清理：顶部字段/调度 slots 中不在素材描述范围内的名称一律清除（如幻觉道具「木栅栏」）
         prompt_input = _prune_fantasy_assets(prompt_input, slot_to_asset)
+
+        # 重拍模式：保存最后一次 LLM 拆解/增强后的完整提示词（供「提示词选择」加载）
+        if not passthrough and prompt_input:
+            _save_last_script(story_name, prompt_input)
 
         # 卸载本地 LLM（最后一个 LLM 步骤之后，按 force_offload）
         _llm_finish(enhance)
@@ -2187,7 +2259,7 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
 class JZL_MiniMaxVideoSaveDistributor(io.ComfyNode):
     """视频保存分配 — 接收生成总线，拆成 ≤48 组「图像 + 音频」输出，每组接一个 Video Combine。
 
-    与「JZL - 🤖 MiniMax-H3短剧生成管理器」通过无线总线（JZL_BUS_POOL）传输：
+    与「JZL - 🤖 MiniMax-H3短剧导演台」通过无线总线（JZL_BUS_POOL）传输：
     生成管理器把每段生成的 (IMAGE, AUDIO) 写入总线池，本节点按组序号读出，
     输出 48 组端口：图像1/音频1 … 图像48/音频48。
     """
@@ -2198,7 +2270,7 @@ class JZL_MiniMaxVideoSaveDistributor(io.ComfyNode):
     def define_schema(cls):
         inputs = [
             io.String.Input("bus", display_name="生成总线",
-                tooltip="接「JZL - 🤖 MiniMax-H3短剧生成管理器」的「生成总线」输出"),
+                tooltip="接「JZL - 🤖 MiniMax-H3短剧导演台」的「生成总线」输出"),
         ]
         outputs = []
         for i in range(cls.MAX_GROUPS):

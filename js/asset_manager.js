@@ -16,6 +16,7 @@ import { api } from "../../scripts/api.js";
 
 const NODE_TYPE = "JZL_MiniMaxAssetManager";
 const MANAGER_ENDPOINT = "/jzl/manager";
+const RESHOOT_ENDPOINT = "/jzl/reshoot/load";
 const UPLOAD_ENDPOINT = "/jzl/upload_asset";
 const ASSET_PREVIEW_ENDPOINT = "/jzl/asset_preview";
 const AUDIO_PREVIEW_ENDPOINT = "/jzl/audio_preview";
@@ -666,6 +667,266 @@ function notify(msg, type = "success") {
         if (app?.ui?.toast) { app.ui.toast.add({ text: msg, type }); return; }
     } catch (_) {}
     console.log(`[JZL Asset] ${msg}`);
+}
+
+// ── 🔄 重拍模式：底部折叠区（类似 MiniMax-H3 导演台「全局提示词 & 参考素材」）──
+// 展开后锁定上方主提示词；结构：提示词选择(加载最后一次LLM拆解/增强) + 段号输入(1~99 对应每段) +
+// 提示词显示窗(可二度修改)。运行仅用当前段提示词生成一段视频（穿透模式单段）。
+function extractShots(script) {
+    const out = [];
+    const re = /\[SHOT_START\]([\s\S]*?)\[SHOT_END\]/g;
+    let m;
+    while ((m = re.exec(script || ""))) out.push(m[1].replace(/^[\s\n]+/, "").replace(/[\s\n]+$/, ""));
+    return out;
+}
+
+function createReshootSection(ctx) {
+    const { self, promptBox, ipWidget, resizeNode } = ctx;
+
+    // 折叠头
+    const header = el("div", "display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;font-size:13px;font-weight:600;color:#e8a87c;border:1px solid #5b9bd5;border-radius:6px;padding:6px 8px;background:#2a2a2a;margin-top:4px;box-sizing:border-box;");
+    const chevron = el("span", "font-size:11px;transition:transform .15s;", "▶");
+    header.appendChild(chevron);
+    header.appendChild(el("span", "", "🔄 重拍模式"));
+    header.appendChild(el("span", "font-size:11px;color:#888;margin-left:auto;font-weight:400;", "展开后锁定上方提示词；点「运行」只重拍当前选中段（穿透单段）"));
+
+    // 主体（默认收起）
+    const body = el("div", "display:none;margin-top:6px;border:1px solid #444;border-radius:6px;padding:8px;background:#222;box-sizing:border-box;");
+
+    // 第一行：提示词来源状态显示 + 上传本地 .txt 提示词（重拍提示词与上方主提示词完全独立）
+    const selRow = el("div", "display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;");
+    const uploadBtn = el("button", "flex:0 0 auto;height:28px;padding:0 10px;border-radius:5px;border:1px solid #5b9bd5;background:#3a3a3a;color:#eee;font-size:12px;cursor:pointer;white-space:nowrap;", "📂 上传提示词");
+    uploadBtn.title = "选择本地 .txt/.md 提示词文件作为重拍提示词源";
+    const loadStatus = el("span", "font-size:11px;color:#888;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;", "提示词来源：最后一次 LLM 拆解");
+    selRow.append(uploadBtn, loadStatus);
+
+    // 重拍视频编号（左右箭头切换 1~99）+ 提示词显示窗（可编辑）
+    const segRow = el("div", "display:flex;align-items:center;gap:8px;margin-bottom:6px;");
+    segRow.appendChild(el("span", "font-size:12px;color:#bbb;white-space:nowrap;", "重拍视频编号"));
+    const segPrev = el("button", "width:26px;height:26px;flex:0 0 auto;border-radius:4px;border:1px solid #5b9bd5;background:#3a3a3a;color:#eee;font-size:12px;cursor:pointer;line-height:1;padding:0;", "◀");
+    const segLabel = el("span", "font-size:12px;color:#e8a87c;white-space:nowrap;min-width:150px;text-align:center;", "当前选择重拍第 0 段视频");
+    const segNext = el("button", "width:26px;height:26px;flex:0 0 auto;border-radius:4px;border:1px solid #5b9bd5;background:#3a3a3a;color:#eee;font-size:12px;cursor:pointer;line-height:1;padding:0;", "▶");
+    const segTag = el("span", "font-size:11px;color:#888;white-space:nowrap;", "（共 0 段）");
+    segPrev.addEventListener("mousedown", (e) => e.stopPropagation());
+    segNext.addEventListener("mousedown", (e) => e.stopPropagation());
+    segPrev.addEventListener("click", () => setSeg(state.selected));          // ◀ 上一段（setSeg 1-based：当前段号-1）
+    segNext.addEventListener("click", () => setSeg(state.selected + 2));      // ▶ 下一段（setSeg 1-based：当前段号+1）
+    segRow.append(segPrev, segLabel, segNext, segTag);
+    // 提示词显示窗（可编辑，默认显示段号对应段的完整提示词）
+    const edit = document.createElement("textarea");
+    edit.spellcheck = false;
+    edit.style.cssText = "width:100%;height:190px;box-sizing:border-box;background:#161616;color:#ddd;border:1px solid #444;border-radius:5px;padding:6px 8px;font-size:12px;resize:none;outline:none;overflow-y:auto;white-space:pre-wrap;word-break:break-word;line-height:1.5;";
+    edit.placeholder = "当前段的完整提示词显示在这里，可在此二度修改…";
+    edit.addEventListener("mousedown", (e) => e.stopPropagation());
+
+    body.append(selRow, segRow, edit);
+
+    // 状态（持久到 manager_settings.reshoot，刷新不丢失；source 记录提示词来源显示）
+    const state = self.__reshootState || (self.__reshootState = { script: "", shots: [], selected: 0, prompt: "", expanded: false, source: "" });
+
+    const readSettings = async () => (await loadManager(self)).settings;
+    const commit = async () => {
+        try {
+            const s = await readSettings();
+            s.reshoot = {
+                script: state.script, shots: state.shots,
+                selected: state.selected, prompt: state.prompt, expanded: expanded,
+                source: state.source,
+            };
+            await saveManager(self, s);
+        } catch (_) {}
+    };
+
+    const setSeg = (n) => {
+        if (!state.shots.length) {
+            state.selected = 0; state.prompt = ""; edit.value = ""; segTag.textContent = "（共 0 段）"; segLabel.textContent = "当前选择重拍第 0 段视频";
+            return;
+        }
+        let idx = (Number.isInteger(n) ? n : parseInt(n, 10) || 1) - 1;
+        if (idx < 0) idx = 0;
+        if (idx >= state.shots.length) idx = state.shots.length - 1;
+        state.selected = idx;
+        state.prompt = state.shots[idx].trim();
+        edit.value = state.prompt;
+        segLabel.textContent = `当前选择重拍第 ${idx + 1} 段视频`;
+        segTag.textContent = `（共 ${state.shots.length} 段）`;
+        commit();
+    };
+    segPrev.title = "上一段";
+    segNext.title = "下一段";
+
+    // 锁定 / 解锁主提示词框
+    const setLocked = (locked) => {
+        if (locked) {
+            promptBox.contentEditable = "false";
+            promptBox.style.background = "#1d1d1d";
+            promptBox.style.color = "#777";
+            promptBox.dataset.placeholder = "🔒 重拍模式已锁定：上方提示词不可编辑（仅重拍选中镜头）";
+        } else {
+            promptBox.contentEditable = "true";
+            promptBox.style.background = "#2a2a2a";
+            promptBox.style.color = "#ddd";
+            promptBox.dataset.placeholder = "输入故事/剧本提示词，用 @ 引用素材…";
+        }
+    };
+
+    // 加载提示词源（默认LLM拆解 或 本地文件）→ 切段 + 生产规范校验 + 填充界面。
+    // 重拍提示词与上方主提示词完全独立：绝不写入 internal_prompt / 主编辑框。
+    const applyScript = async (script, meta) => {
+        if (!script || !String(script).trim()) {
+            notify("提示词为空", "error");
+            loadStatus.textContent = "⚠️ 提示词为空";
+            loadStatus.style.color = "#ffb84d";
+            return;
+        }
+        script = String(script).trim();
+        const shots = extractShots(script);
+        state.script = script; state.shots = shots; state.selected = 0;
+        state.source = (meta && meta.display) ? meta.display : "";
+        // 生产规范校验：段数 / H3_PROMPT 标记 / 与「生成视频数量」一致性
+        const vcW = (self.widgets || []).find((w) => w.name === "video_count");
+        const vc = parseInt(readWidgetValue(vcW), 10) || 6;
+        const warns = [];
+        if (!shots.length) warns.push("未识别到 [SHOT_START] 分段");
+        if (shots.length && shots.length !== vc) warns.push(`识别到 ${shots.length} 段，与「生成视频数量」${vc} 不一致`);
+        const noH3 = shots.filter((s) => s.indexOf("===H3_PROMPT===") < 0).length;
+        if (noH3) warns.push(`${noH3} 段缺少 ===H3_PROMPT=== 标记`);
+        if (warns.length) {
+            // 状态行始终显示提示词来源；规范问题用 toast 弹出 + 行尾 ⚠ 标记
+            notify("⚠️ " + warns.join("；"), "error");
+            loadStatus.textContent = (state.source || `已加载 ${shots.length} 段`) + " ⚠️";
+            loadStatus.style.color = "#ffb84d";
+            loadStatus.title = "生产规范提示：\n" + warns.join("\n");
+        } else if (state.source) {
+            loadStatus.textContent = state.source;
+            loadStatus.style.color = "#5ecf8a";
+            loadStatus.title = "";
+        } else {
+            loadStatus.textContent = `已加载 ${shots.length} 段`;
+            loadStatus.style.color = "#5ecf8a";
+            loadStatus.title = "";
+        }
+        // 默认选中第1段
+        setSeg(1);
+        await commit();
+        try { resizeNode(); } catch (_) {}
+    };
+
+    // 默认来源：最后一次 LLM 拆解/增强（后端 output/jzl/最近提示词.json），展开时自动加载
+    const autoLoad = async () => {
+        try {
+            const resp = await api.fetchApi(RESHOOT_ENDPOINT);
+            const data = await resp.json().catch(() => ({}));
+            if (data && data.script) {
+                const disp = `提示词来源：最后一次 LLM 拆解（${data.story_name || "未命名"}${data.time ? " · " + data.time : ""}）`;
+                loadStatus.textContent = disp;
+                loadStatus.style.color = "#5ecf8a";
+                await applyScript(data.script, { display: disp });
+            } else {
+                loadStatus.textContent = "未找到最后一次 LLM 拆解提示词，可点「📂 上传提示词」选择本地文件";
+                loadStatus.style.color = "#888";
+            }
+        } catch (_) {
+            loadStatus.textContent = "加载失败，可点「📂 上传提示词」选择本地文件";
+            loadStatus.style.color = "#888";
+        }
+    };
+
+    // 上传提示词：选择本地 .txt/.md 提示词文件（FileReader 读取内容作为重拍提示词源）
+    uploadBtn.addEventListener("click", () => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".txt,.text,.md,text/plain";
+        input.style.display = "none";
+        const done = () => { if (input.parentNode) input.parentNode.removeChild(input); };
+        input.addEventListener("change", () => {
+            const file = input.files && input.files[0];
+            if (!file) { done(); return; }
+            const reader = new FileReader();
+            reader.onload = async () => {
+                done();
+                const txt = String(reader.result || "").replace(/^\uFEFF/, "");  // 容错 UTF-8 BOM
+                try { await applyScript(txt, { name: file.name, from: "upload", display: `提示词来源：本地文件 ${file.name}` }); }
+                catch (e) { notify(`解析失败：${e && e.message ? e.message : e}`, "error"); }
+            };
+            reader.onerror = () => { done(); notify("文件读取失败", "error"); };
+            reader.readAsText(file, "utf-8");
+        });
+        input.addEventListener("cancel", done);
+        document.body.appendChild(input);
+        input.click();
+    });
+    uploadBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+
+    // 折叠展开
+    let expanded = false;
+    const toggle = () => {
+        expanded = !expanded;
+        state.expanded = expanded;
+        chevron.textContent = expanded ? "▼" : "▶";
+        body.style.display = expanded ? "block" : "none";
+        setLocked(expanded);
+        commit();
+        // 首次展开且无数据：自动加载默认来源（最后一次 LLM 拆解）
+        if (expanded && !state.shots.length && !state.autoLoaded) { state.autoLoaded = true; autoLoad(); }
+        setTimeout(() => { try { resizeNode(); } catch (_) {} }, 30);
+    };
+    header.addEventListener("mousedown", (e) => e.stopPropagation());
+    header.addEventListener("click", toggle);
+
+    // 重拍运行拦截：重拍模式展开且已加载提示词时，点击「运行」自动以穿透模式+单段生成选中段。
+    // apply 在 queuePrompt 提交前临时改参数，restore 在提交后恢复（不污染主提示词/普通模式）。
+    self.__reshootBuildRunPatch = () => {
+        if (!expanded || !state.shots.length) return null;   // 收起或无数据时不拦截
+        const p = edit.value.trim();
+        if (!p) return null;
+        const rmW = (self.widgets || []).find((w) => w.name === "run_mode");
+        const vcW = (self.widgets || []).find((w) => w.name === "video_count");
+        const backupRM = rmW ? readWidgetValue(rmW) : null;
+        const backupVC = vcW ? readWidgetValue(vcW) : null;
+        const backupIP = ipWidget ? readWidgetValue(ipWidget) : "";
+        const single = `[SHOT_START]\n${p}\n[SHOT_END]`;
+        return {
+            apply() {
+                if (rmW) setWidgetValue(rmW, "穿透生成模式");
+                if (vcW) setWidgetValue(vcW, 1);
+                if (ipWidget) setWidgetValue(ipWidget, single);
+            },
+            restore() {
+                try {
+                    if (rmW && backupRM !== null) setWidgetValue(rmW, backupRM);
+                    if (vcW && backupVC !== null) setWidgetValue(vcW, backupVC);
+                    if (ipWidget) setWidgetValue(ipWidget, backupIP);
+                } catch (_) {}
+            },
+        };
+    };
+
+    // 刷新时恢复（由 onNodeCreated 的 loadManager.then 调用）
+    const refresh = (settings) => {
+        const rs = settings && settings.reshoot;
+        if (!rs) return;
+        state.script = rs.script || "";
+        state.shots = Array.isArray(rs.shots) ? rs.shots : extractShots(rs.script);
+        state.selected = Number.isInteger(rs.selected) ? Math.max(0, Math.min(rs.selected, state.shots.length - 1)) : 0;
+        state.prompt = rs.prompt || (state.shots[state.selected] || "");
+        state.expanded = !!rs.expanded;
+        state.source = rs.source || "";
+        edit.value = state.prompt || (state.shots[state.selected] || "");
+        segTag.textContent = state.shots.length ? `（共 ${state.shots.length} 段）` : "（共 0 段）";
+        segLabel.textContent = state.shots.length ? `当前选择重拍第 ${state.selected + 1} 段视频` : "当前选择重拍第 0 段视频";
+        if (state.source) { loadStatus.textContent = state.source; loadStatus.style.color = "#5ecf8a"; }
+        if (state.expanded) {
+            expanded = true;
+            chevron.textContent = "▼";
+            body.style.display = "block";
+            setLocked(true);
+            if (!state.shots.length && !state.autoLoaded) { state.autoLoaded = true; autoLoad(); }
+            setTimeout(() => { try { resizeNode(); } catch (_) {} }, 60);
+        }
+    };
+
+    return { header, body, refresh };
 }
 
 async function loadLists() {
@@ -1902,7 +2163,7 @@ const USAGE_FALLBACK_HTML = `
 <p style="margin:6px 0;">一个节点完成 <b>剧本分段 → 参考调度 → 编码 → 采样 → 解码</b> 全流程，输出生成总线，无缝对接「视频保存分配」与 VHS 保存，亦支持 ffmpeg 逐段落盘 / 自动合并。</p>
 <h4 style="margin:10px 0 4px;color:var(--fg-color,#eee);">一、快速上手</h4>
 <ol style="padding-left:20px;margin:4px 0;">
-<li>添加节点：JZL/MiniMax → <code>JZL - 🤖 MiniMax-H3短剧生成管理器</code></li>
+<li>添加节点：JZL/MiniMax → <code>JZL - 🤖 MiniMax-H3短剧导演台</code></li>
 <li>接好模型输入：主模型 / CLIP / 视觉VAE / 音频VAE（含视频或音频参考时必须接音频VAE）</li>
 <li>在节点表面 📝 提示词 框输入故事 / 剧本（可用 @ 引用素材）</li>
 <li>点「📁 参考素材管理」上传并配置素材（图片 / 视频 / 音频）</li>
@@ -2063,7 +2324,7 @@ function buildModal(node, data, panelId) {
     ensureManagerStyle();
     const settings = (data && data.settings) ? data.settings : defaultSettings();
     const d = data || { llm_models: [], mmproj_models: ["None"], chat_handlers: ["None"] };
-    const title = (PANELS[panelId] && PANELS[panelId].label) || "🎬 JZL - 🤖 MiniMax-H3短剧生成管理器";
+    const title = (PANELS[panelId] && PANELS[panelId].label) || "🎬 JZL - 🤖 MiniMax-H3短剧导演台";
 
     const overlay = el("div", "position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:9999;display:flex;align-items:center;justify-content:center;");
     const dialog = el("section", "background:#1c1c1e;border:1px solid #333;border-radius:8px;width:820px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 20px 40px rgba(0,0,0,0.6);");
@@ -2155,6 +2416,44 @@ function buildModal(node, data, panelId) {
     overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
 
     modal = { overlay, dialog, close, __data: settings };
+}
+
+// ── 🔄 重拍运行拦截（一次性 patch app.graphToPrompt）────────────────
+// V3 前端 app.graphToPrompt 是 async（返回 Promise，内部 await 后才把 widget 值写入 workflow）。
+// 同步 apply/restore 会因 await 时序失效；这里改为包装 Promise：
+//   apply（同步，改 widget）→ 调用原生 graphToPrompt（async，生成 workflow 时读到穿透单段）
+//   → Promise resolve 后 restore（恢复原参数）。
+// 这样用户点 ComfyUI「运行」时，重拍模式会自动只用选中段生成一段视频（穿透生成）。
+if (!app.__jzlReshootGraphPatched) {
+    app.__jzlReshootGraphPatched = true;
+    const _origGTP = app.graphToPrompt ? app.graphToPrompt.bind(app) : null;
+    if (_origGTP) {
+        app.graphToPrompt = function (...args) {
+            const _g = this && this.graph ? this.graph : app.graph;
+            const _ns = _g ? (_g._nodes || _g.nodes || []) : [];
+            const _patches = [];
+            for (const _n of _ns) {
+                if (_n && typeof _n.__reshootBuildRunPatch === "function") {
+                    const _p = _n.__reshootBuildRunPatch();
+                    if (_p) _patches.push(_p);
+                }
+            }
+            if (!_patches.length) return _origGTP.apply(this, args);
+            for (const _p of _patches) { try { _p.apply(); } catch (_) {} }
+            const _restore = () => { for (const _p of _patches) { try { _p.restore(); } catch (_) {} } };
+            try {
+                const _pr = _origGTP.apply(this, args);
+                if (_pr && typeof _pr.then === "function") {
+                    return _pr.then((_r) => { _restore(); return _r; }, (_e) => { _restore(); throw _e; });
+                }
+                _restore();   // 同步返回兜底
+                return _pr;
+            } catch (e) {
+                _restore();
+                throw e;
+            }
+        };
+    }
 }
 
 app.registerExtension({
@@ -2365,7 +2664,8 @@ app.registerExtension({
                         // scrollHeight 取完整内容高度（含多行），避免 overflow 把多行素材吞掉
                         const assetsH = windowBox.scrollHeight || windowBox.offsetHeight || 30;
                         const btnRows = Math.ceil(PANEL_BUTTONS.length / 4);
-                        const minDom = btnRows * 40 + 10 + 16 + 72 + 22 + assetsH + 20;  // 按钮N行 + gap + 信息行 + 提示词min + 资产窗标题 + padding
+                        const reshootH = (self.__reshootBody && self.__reshootBody.style.display !== "none") ? (self.__reshootBody.offsetHeight || 0) : 0;  // 重拍区展开时计入节点高度
+                        const minDom = btnRows * 40 + 10 + 16 + 72 + 22 + assetsH + reshootH + 20;  // 按钮N行 + gap + 信息行 + 提示词min + 资产窗标题 + 重拍区 + padding
                         const y = (self.widgets || []).find((w) => w.name === "jzl_manager")?.y;
                         const need = (Number.isFinite(y) ? y : 220) + minDom;
                         if (self.size && need > (self.size[1] || 0) + 1) {
@@ -2383,6 +2683,15 @@ app.registerExtension({
             windowBox.__onResize = resizeNodeForContent;
             container.appendChild(windowTitle);
             container.appendChild(windowBox);
+
+            // 🔄 重拍模式（底部折叠区）：提示词选择 + 段号(1~99) + 提示词显示窗（可编辑）
+            const reshootSection = createReshootSection({
+                self, promptBox, ipWidget, resizeNode: resizeNodeForContent,
+            });
+            container.appendChild(reshootSection.header);
+            container.appendChild(reshootSection.body);
+            self.__reshootBody = reshootSection.body;
+            self.__reshootRefresh = reshootSection.refresh;
 
             // 缓存资产名并渲染资产显示窗；内部提示词重新渲染成着色 token 并同步到 internal_prompt
             const refreshAssets = () => {
@@ -2442,6 +2751,8 @@ app.registerExtension({
                 updateDisplay();
                 refreshAssets();
                 updateInfo();
+                // 恢复重拍模式状态（拆解提示词/选中段/编辑内容/展开锁定），刷新不丢失
+                self.__reshootRefresh?.(data.settings);
             }).catch(() => {});
             self.__jzlRefresh = refreshAssets;  // 弹窗保存资产后实时刷新本节点
 

@@ -46,6 +46,7 @@ from .nodes_asset_manager import (
     _read_manager_settings,
     _write_manager_settings,
     _resolve_asset_path,
+    _load_last_script,
 )
 
 WEB_DIRECTORY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "js")
@@ -114,7 +115,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JZL_MiniMaxH3Ref2vaBusOut": "JZL - 🔗 MiniMax H3 ref2va参考总线（打包）",
     "JZL_MiniMaxH3Ref2vaBusIn": "JZL - 🔗 MiniMax H3 ref2va参考总线（解包）",
     "JZL_MiniMaxPromptEnhancer": "JZL - ✨ 提示词增强",
-    "JZL_MiniMaxAssetManager": "JZL - 🤖 MiniMax-H3短剧生成管理器",
+    "JZL_MiniMaxAssetManager": "JZL - 🤖 MiniMax-H3短剧导演台",
     "JZL_MiniMaxVideoSaveDistributor": "JZL - 💾 视频保存分配",
 }
 
@@ -411,7 +412,7 @@ async def jzl_export_assets(request):
             return (str(v) if v is not None else "").replace("|", "／").strip()
 
         lines = [
-            "# JZL 素材库（MiniMax-H3短剧生成管理器）v1",
+            "# JZL 素材库（MiniMax-H3短剧导演台）v1",
             "# 每行：类型 | 编号 | 名称 | 描述 | 路径 | 启用(1/0)",
             "",
         ]
@@ -548,6 +549,16 @@ async def jzl_usage_md(request):
             return web.Response(text=f.read(), content_type="text/plain; charset=utf-8")
     except Exception as e:
         return web.Response(status=404, text=f"文档读取失败: {str(e)}")
+
+
+@PromptServer.instance.routes.get("/jzl/reshoot/load")
+async def jzl_reshoot_load(request):
+    """重拍模式：读取最后一次 LLM 拆解/增强后的完整提示词（output/jzl/最近提示词.json）。
+
+    返回 {story_name, script, shots[], shot_count, time}；无记录时 shots 为空。
+    """
+    data = _load_last_script() or {"story_name": "", "script": "", "shots": [], "shot_count": 0, "time": ""}
+    return web.json_response(data)
 
 
 @PromptServer.instance.routes.get("/jzl/usage_qr/{name}")

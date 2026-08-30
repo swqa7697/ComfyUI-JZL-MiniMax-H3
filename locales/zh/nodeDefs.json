@@ -213,7 +213,7 @@
     }
   },
   "JZL_MiniMaxAssetManager": {
-    "display_name": "JZL - 🤖 MiniMax-H3短剧生成管理器",
+    "display_name": "JZL - 🤖 MiniMax-H3短剧导演台",
     "inputs": {
       "run_mode": { "name": "运行模式" },
       "aspect_ratio": { "name": "画幅比例" },

@@ -607,7 +607,7 @@
     }
   },
   "JZL_MiniMaxAssetManager": {
-    "display_name": "JZL - 🤖 MiniMax-H3 Short Drama Manager",
+    "display_name": "JZL - 🤖 MiniMax-H3 Short Drama Director",
     "inputs": {
       "run_mode": { "name": "Run Mode" },
       "aspect_ratio": { "name": "Aspect Ratio" },
