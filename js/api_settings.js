@@ -142,10 +142,10 @@ async function openSettings(node) {
         "border-radius:8px;padding:18px 20px;width:min(580px,92vw);max-height:88vh;overflow:auto;color:var(--fg-color,#ddd);";
     dialog.setAttribute("role", "dialog");
     dialog.setAttribute("aria-modal", "true");
-    dialog.setAttribute("aria-label", "API 设置");
+    dialog.setAttribute("aria-label", "LLM-API 设置");
 
     const title = document.createElement("div");
-    title.textContent = "API 设置";
+    title.textContent = "LLM-API 设置";
     title.style.cssText = "font-size:16px;font-weight:600;margin-bottom:4px;";
     const subtitle = document.createElement("div");
     subtitle.textContent = "配置保存在本地（ComfyUI user 目录），不会写入工作流。";

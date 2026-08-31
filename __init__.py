@@ -40,6 +40,7 @@ from .nodes_ref2va_bus import JZL_MiniMaxH3Ref2vaBusOut, JZL_MiniMaxH3Ref2vaBusI
 from .nodes_prompt_enhancer import JZL_MiniMaxPromptEnhancer
 from .nodes_asset_manager import (
     JZL_MiniMaxAssetManager,
+    JZL_MiniMaxAssetManagerMini,
     JZL_MiniMaxVideoSaveDistributor,
     _read_asset_settings,
     _write_asset_settings,
@@ -82,6 +83,7 @@ NODE_CLASS_MAPPINGS = {
     "JZL_MiniMaxH3Ref2vaBusIn": JZL_MiniMaxH3Ref2vaBusIn,
     "JZL_MiniMaxPromptEnhancer": JZL_MiniMaxPromptEnhancer,
     "JZL_MiniMaxAssetManager": JZL_MiniMaxAssetManager,
+    "JZL_MiniMaxAssetManagerMini": JZL_MiniMaxAssetManagerMini,
     "JZL_MiniMaxVideoSaveDistributor": JZL_MiniMaxVideoSaveDistributor,
 }
 
@@ -105,7 +107,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JZL_MiniMaxPreset": "JZL - ✨ MiniMax-fl2va提示词预设",
     "JZL_MiniMaxRef2vaPreset": "JZL - ✨ MiniMax-ref2va提示词预设",
     "JZL_MiniMaxH3Preference": "JZL - 🎯 MiniMax H3 偏好设置",
-    "JZL_MiniMaxAPISettings": "JZL - 🌐 API 设置",
+    "JZL_MiniMaxAPISettings": "JZL - 🌐 LLM-API 设置",
     "JZL_MiniMaxMusicCaption": "JZL - 🎵 MiniMax Music3 提示词预设",
     "JZL_MiniMaxMusicCaptionDuet": "JZL - 🎵 MiniMax Music3 提示词预设（双人）",
     "JZL_MiniMaxMusicLyricsEditor": "JZL - 🎵 MiniMax Music3 歌词编辑",
@@ -115,7 +117,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JZL_MiniMaxH3Ref2vaBusOut": "JZL - 🔗 MiniMax H3 ref2va参考总线（打包）",
     "JZL_MiniMaxH3Ref2vaBusIn": "JZL - 🔗 MiniMax H3 ref2va参考总线（解包）",
     "JZL_MiniMaxPromptEnhancer": "JZL - ✨ 提示词增强",
-    "JZL_MiniMaxAssetManager": "JZL - 🤖 MiniMax-H3短剧导演台",
+    "JZL_MiniMaxAssetManager": "JZL - 🤖 MiniMax-H3短剧导演台Pro",
+    "JZL_MiniMaxAssetManagerMini": "JZL - 🤖 MiniMax-H3短剧导演台Mini",
     "JZL_MiniMaxVideoSaveDistributor": "JZL - 💾 视频保存分配",
 }
 
@@ -412,7 +415,7 @@ async def jzl_export_assets(request):
             return (str(v) if v is not None else "").replace("|", "／").strip()
 
         lines = [
-            "# JZL 素材库（MiniMax-H3短剧导演台）v1",
+            "# JZL 素材库（MiniMax-H3短剧导演台Pro）v1",
             "# 每行：类型 | 编号 | 名称 | 描述 | 路径 | 启用(1/0)",
             "",
         ]

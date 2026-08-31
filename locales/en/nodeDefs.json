@@ -430,7 +430,7 @@
     }
   },
   "JZL_MiniMaxAPISettings": {
-    "display_name": "JZL - 🌐 API Settings"
+    "display_name": "JZL - 🌐 LLM-API Settings"
   },
   "JZL_MiniMaxMusicCaption": {
     "display_name": "JZL - 🎵 MiniMax Music3 Prompt Preset"
@@ -607,7 +607,7 @@
     }
   },
   "JZL_MiniMaxAssetManager": {
-    "display_name": "JZL - 🤖 MiniMax-H3 Short Drama Director",
+    "display_name": "JZL - 🤖 MiniMax-H3 Short Drama Director Pro",
     "inputs": {
       "run_mode": { "name": "Run Mode" },
       "aspect_ratio": { "name": "Aspect Ratio" },
@@ -630,6 +630,34 @@
       "clip": { "name": "CLIP" },
       "vae": { "name": "VAE" },
       "audio_vae": { "name": "Audio VAE" }
+    }
+  },
+  "JZL_MiniMaxAssetManagerMini": {
+    "display_name": "JZL - 🤖 MiniMax-H3 Short Drama Director Mini",
+    "inputs": {
+      "run_mode": { "name": "Run Mode" },
+      "aspect_ratio": { "name": "Aspect Ratio" },
+      "megapixels": { "name": "Megapixels (MP)" },
+      "display_info": { "name": "Resolution / Total Frames" },
+      "duration": { "name": "Per-Segment Duration" },
+      "scale_factor": { "name": "Reference Value Scale" },
+      "video_count": { "name": "Video Count" },
+      "upscale_scale": { "name": "2nd-Pass Latent Scale" },
+      "story_style": { "name": "Story Style" },
+      "story_name": { "name": "Story Name" },
+      "model": { "name": "Model" },
+      "clip": { "name": "CLIP" },
+      "vae": { "name": "VAE" },
+      "audio_vae": { "name": "Audio VAE" }
+    },
+    "outputs": {
+      "0": { "name": "Model" },
+      "1": { "name": "VAE" },
+      "2": { "name": "Audio VAE" },
+      "3": { "name": "Latent Scale" },
+      "4": { "name": "Positive" },
+      "5": { "name": "Latent" },
+      "6": { "name": "Decomposed Script" }
     }
   }
 }

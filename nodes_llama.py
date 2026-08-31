@@ -545,7 +545,7 @@ class JZL_MiniMax_ScriptProcessor:
                 "llama_model": ("LLAMACPPMODEL",),
                 "parameters": ("LLAMACPPARAMS",),
                 "api_config": ("STRING", {"forceInput": True,
-                    "tooltip": "在线API 模式：从「JZL - 🌐 API 设置」节点连线，自动读取弹窗中保存的配置"}),
+                    "tooltip": "在线API 模式：从「JZL - 🌐 LLM-API 设置」节点连线，自动读取弹窗中保存的配置"}),
                 "preference": ("STRING", {"default": "", "forceInput": True,
                     "tooltip": "从「JZL - 🎯 MiniMax H3 偏好设置」节点连线"}),
                 "custom_rule_path": ("STRING", {"default": "",
@@ -924,7 +924,7 @@ class JZL_MiniMax_ScriptProcessor:
                 elif not save_states:
                     LLAMA_CPP_STORAGE.clean_state()
         else:
-            return ("[错误] 请连接 llama_model，或切换到在线API 并从「API 设置」节点连线 api_config", {})
+            return ("[错误] 请连接 llama_model，或切换到在线API 并从「JZL - 🌐 LLM-API 设置」节点连线 api_config", {})
 
         # 解析 N 段 → 四段（H3提示词 / 场景 / 视频 / 音频），保存 TXT
         shots = re.findall(r'\[SHOT_START\](.*?)\[SHOT_END\]', result or "", re.DOTALL)

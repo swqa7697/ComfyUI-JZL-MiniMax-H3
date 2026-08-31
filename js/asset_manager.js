@@ -15,6 +15,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const NODE_TYPE = "JZL_MiniMaxAssetManager";
+const MINI_NODE_TYPE = "JZL_MiniMaxAssetManagerMini";
 const MANAGER_ENDPOINT = "/jzl/manager";
 const RESHOOT_ENDPOINT = "/jzl/reshoot/load";
 const UPLOAD_ENDPOINT = "/jzl/upload_asset";
@@ -166,6 +167,16 @@ function assetColor(item) {
     return ASSET_COLORS[item.kind] || "#9aa7b8";
 }
 
+function rememberCaret(editable) {
+    // 把编辑器的实时光标偏移记到自身 __lastCaret（每个编辑器独立记忆，避免全局/闭包记忆过期）。
+    // 点击素材卡片会 blur 编辑器导致 selection 丢失，因此在 mousedown（blur 前）调用本函数捕获。
+    if (!editable) return;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount && editable.contains(sel.anchorNode)) {
+        editable.__lastCaret = caretOffset(editable);
+    }
+}
+
 // contenteditable 光标辅助
 function caretOffset(editable) {
     // 与 getPromptText 一致：token 按 dataset.jzlName（资产名）计长，
@@ -178,7 +189,23 @@ function caretOffset(editable) {
     pre.setEnd(range.endContainer, range.endOffset);
     const tmp = document.createElement("div");
     tmp.appendChild(pre.cloneContents());
-    return getPromptText(tmp).length;
+    let base = getPromptText(tmp).length;
+    // 关键修正：光标位于某个「未闭合」的块级元素（DIV/P）内部时，
+    // getPromptText 会给该元素末尾多加 1 个换行（\n 在元素之后）。
+    // 但光标在元素内部时该换行尚未出现 → 需减去 1，才能与 setCaretToOffset 的
+    // 遍历定位完全对称（否则点击资产窗插入会整体后移 1 字符 → 「素材换行错位」）。
+    let node = range.endContainer;
+    let subtract = 0;
+    while (node && node !== editable) {
+        if (node.nodeType === 1 && (node.tagName === "DIV" || node.tagName === "P")) {
+            // 空行 <div><br></div>（光标在 br 后）→ 内容已完整（br 已代表该行换行），不减
+            const onlyBr = node.childNodes.length === 1 && node.firstChild && node.firstChild.nodeType === 1 && node.firstChild.tagName === "BR";
+            if (!onlyBr) subtract = 1;
+            break;
+        }
+        node = node.parentNode;
+    }
+    return base - subtract;
 }
 function getPromptText(editable) {
     // 精确纯文本：普通文本拼接；资产 token 输出其全名(dataset.jzlAsset)；<br>/块级转 \n
@@ -193,7 +220,19 @@ function getPromptText(editable) {
                 } else if (child.tagName === "BR") {
                     out += "\n";
                 } else if (child.tagName === "DIV" || child.tagName === "P") {
-                    visit(child); out += "\n";
+                    // 块级元素行尾若为占位 <br>（Chrome 的行尾占位，不产生可见空行），不追加 div 换行：
+                    //  - <div><br></div>（空行）→ 1 个换行
+                    //  - <div>文本<br></div>（文本+行尾占位 br）→ "文本\n"（1 个换行）
+                    //  - <div>文本</div> → "文本\n"
+                    // 否则会算成 2 个换行 → 光标偏移翻倍、插入错位多出一行
+                    const lastNode = child.lastChild;
+                    const trailingBr = lastNode && lastNode.nodeType === 1 && lastNode.tagName === "BR";
+                    if (trailingBr && child.childNodes.length === 1) {
+                        out += "\n";
+                    } else {
+                        visit(child);
+                        if (!trailingBr) out += "\n";
+                    }
                 } else {
                     visit(child);
                 }
@@ -261,10 +300,51 @@ function setCaretToOffset(editable, offset) {
                     }
                     remaining -= 1;
                 } else if (child.tagName === "DIV" || child.tagName === "P") {
+                    // 空行 <div><br></div>：只计 1 个换行；定位在 br 前（div 内开头）→ 素材填进该行，
+                    // br 变行尾占位（若插在 br 后，行首 br 会产生额外空行 → 「汉字和素材之间多一行」）
+                    const lastNode = child.lastChild;
+                    const trailingBr = lastNode && lastNode.nodeType === 1 && lastNode.tagName === "BR";
+                    const onlyBr = trailingBr && child.childNodes.length === 1;
+                    if (onlyBr) {
+                        if (remaining <= 1) {
+                            range.setStart(child, 0);
+                            range.collapse(true);
+                            found = true;
+                            return;
+                        }
+                        remaining -= 1;
+                        continue;
+                    }
                     walk(child);
                     if (found) return;
-                    // 块级元素末尾按 1 个换行计（与 getPromptText 一致）
-                    if (remaining <= 0) {
+                    // 块级元素按「子内容 + 1 个换行」计（与 getPromptText 完全一致）：
+                    // walk 后 remaining = 定位点相对「子内容末尾」的剩余偏移
+                    //  - 0 → 定位点恰在子内容末尾 → 元素内部末尾（行尾占位 br 时定位 br 前）
+                    //  - 1 → 定位点恰在元素换行位置 → 元素之后（必须 return，否则多推进 1 字符
+                    //        会错位到下一个元素开头 → 「素材换行错位」）
+                    //  - >1 → 消耗该换行后继续下一个节点
+                    if (remaining === 0) {
+                        const last = child.lastChild;
+                        if (last) {
+                            // 行尾占位 br：定位 br 前，避免 br 跑到素材前产生额外空行
+                            if (last.nodeType === 1 && last.tagName === "BR") {
+                                const before = last.previousSibling;
+                                if (before) range.setStartAfter(before);
+                                else range.setStart(child, 0);
+                            } else {
+                                range.setStartAfter(last);
+                            }
+                            range.collapse(true);
+                            found = true;
+                            return;
+                        }
+                        // 空块级元素：视为一个换行，定位元素之后
+                        range.setStartAfter(child);
+                        range.collapse(true);
+                        found = true;
+                        return;
+                    }
+                    if (remaining === 1) {
                         range.setStartAfter(child);
                         range.collapse(true);
                         found = true;
@@ -592,32 +672,58 @@ function saveAlignMode(node, mode) {
     setWidgetValue(msW, JSON.stringify(s));
 }
 
-function insertAssetToken(editable, item) {
-    // 在内部编辑窗口（contenteditable）光标处插入「缩略图 + 彩色」锁死 token（资产显示窗点击）
+function insertAssetToken(editable, item, caretRef) {
+    // 在内部编辑窗口（contenteditable）光标处插入素材 token。
+    // caretRef: 可选 { value: number|null } 局部光标记忆（放大编辑器用，与主框全局 promptCaretPos 隔离）
+    // 根本方案：不再手工 setCaretToOffset + insertNode 操作 DOM——Chrome contenteditable 会生成
+    // <div><br></div>、行尾占位 <br> 等结构，在这些结构上做 DOM 定位必然与 getPromptText 计数错位
+    // （表现为「多一行/光标跑到下一行/素材删不掉」的反复打地鼠）。
+    // 改为：纯文本偏移（getPromptText/caretOffset 天然精确）→ 插入素材名 → renderPromptFromText
+    // 整体重建为「textNode(含 \n) + token」干净结构 → 光标定位。DOM 不累积 div/br，三处计数统一。
     if (!editable) return;
-    const token = item.token;  // 去空格全名（后端匹配用）
-    const span = makeAssetToken(token, item);
+    const node = editable.__node;
+    const text = getPromptText(editable);
+    // 1) 计算插入偏移：优先实时光标（IME 也拿得到）；否则编辑器自记忆 __lastCaret（点素材 mousedown 时捕获）；
+    //    再回退 caretRef/promptCaretPos/末尾
+    let offset = null;
+    const _sel = window.getSelection();
+    if (_sel && _sel.rangeCount && editable.contains(_sel.anchorNode)) {
+        offset = caretOffset(editable);
+    }
+    if (typeof offset !== "number" && typeof editable.__lastCaret === "number") {
+        offset = editable.__lastCaret;
+    }
+    if (typeof offset !== "number") {
+        const pos = caretRef ? caretRef.value : promptCaretPos;
+        offset = (typeof pos === "number") ? pos : text.length;
+    }
+    offset = Math.max(0, Math.min(text.length, Math.floor(offset)));
+    // 2) 在纯文本偏移处插入素材名（渲染时匹配着色）
+    const insertName = (item.matchName || item.display || item.token || "").trim();
+    const newText = text.slice(0, offset) + insertName + text.slice(offset);
+    // 3) 整体重渲染为 token（textNode + token，无 div/br）
+    if (node) {
+        renderPromptFromText(editable, newText, node);
+    } else {
+        editable.innerHTML = "";
+        editable.appendChild(document.createTextNode(newText));
+    }
+    // 4) 光标定位到插入素材名之后
+    const target = offset + insertName.length;
+    setCaretToOffset(editable, target);
     editable.focus();
-    // 用记忆的光标位置插入（点击资产窗时实时 selection 会丢失，导致 token 跑到开头）
-    const offset = (typeof promptCaretPos === "number") ? promptCaretPos : getPromptText(editable).length;
-    const range = setCaretToOffset(editable, offset);
-    range.insertNode(span);
-    const caretRange = document.createRange();
-    caretRange.setStartAfter(span);
-    caretRange.collapse(true);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(caretRange);
-    const nameLen = (item.matchName || item.display || token).length;
-    promptCaretPos = offset + nameLen;
     editable.dispatchEvent(new Event("input", { bubbles: true }));
     editable.dispatchEvent(new Event("change"));
+    const newPos = target;
+    editable.__lastCaret = newPos;
+    if (caretRef) caretRef.value = newPos; else promptCaretPos = newPos;
     // 点击添加素材 → 自动激活「显示引用」并保存
     const _n = editable.__node;
     if (_n) { _n.__jzlAlignMode = "ref"; _n.__updateAlignStatus?.(); saveAlignMode(_n, "ref"); }
 }
 
-function renderAssetWindow(windowBox, textarea, node) {
+function renderAssetWindow(windowBox, textarea, node, onInsert, insertFn) {
+    // onInsert: 点击插入后的额外回调（放大编辑器同步显示模式用）；insertFn: 自定义插入回调（放大编辑器传局部光标记忆）
     windowBox.innerHTML = "";
     const items = collectMentionItems(node);
     if (!items.length) {
@@ -650,8 +756,12 @@ function renderAssetWindow(windowBox, textarea, node) {
         label.style.cssText = "width:100%;height:22px;line-height:22px;font-size:11px;color:#cdd8e2;background:rgba(10,20,30,.7);text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 3px;box-sizing:border-box;";
         label.textContent = item.slotLabel || item.display || "";
         cell.append(thumb, label);
-        cell.addEventListener("mousedown", (e) => e.stopPropagation());
-        cell.addEventListener("click", () => insertAssetToken(textarea, item));
+        cell.addEventListener("mousedown", (e) => {
+            e.stopPropagation();
+            // blur 前捕获编辑器的实时光标，保证点击插入用最新位置（防止记忆过期错位）
+            rememberCaret(textarea);
+        });
+        cell.addEventListener("click", () => { (insertFn || insertAssetToken)(textarea, item); onInsert && onInsert(); });
         grid.appendChild(cell);
     }
     windowBox.appendChild(grid);
@@ -681,14 +791,16 @@ function extractShots(script) {
 }
 
 function createReshootSection(ctx) {
-    const { self, promptBox, ipWidget, resizeNode } = ctx;
+    const { self, promptBox, ipWidget, resizeNode, isMini, reshootSegWidget } = ctx;
 
     // 折叠头
     const header = el("div", "display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;font-size:13px;font-weight:600;color:#e8a87c;border:1px solid #5b9bd5;border-radius:6px;padding:6px 8px;background:#2a2a2a;margin-top:4px;box-sizing:border-box;");
     const chevron = el("span", "font-size:11px;transition:transform .15s;", "▶");
     header.appendChild(chevron);
     header.appendChild(el("span", "", "🔄 重拍模式"));
-    header.appendChild(el("span", "font-size:11px;color:#888;margin-left:auto;font-weight:400;", "展开后锁定上方提示词；点「运行」只重拍当前选中段（穿透单段）"));
+    header.appendChild(el("span", "font-size:11px;color:#888;margin-left:auto;font-weight:400;",
+        isMini ? "展开后锁定上方提示词；重拍区仅用于管理/查看提示词（编码输出全部段）"
+               : "展开后锁定上方提示词；点「运行」只重拍当前选中段（穿透单段）"));
 
     // 主体（默认收起）
     const body = el("div", "display:none;margin-top:6px;border:1px solid #444;border-radius:6px;padding:8px;background:#222;box-sizing:border-box;");
@@ -713,13 +825,35 @@ function createReshootSection(ctx) {
     segNext.addEventListener("click", () => setSeg(state.selected + 2));      // ▶ 下一段（setSeg 1-based：当前段号+1）
     segRow.append(segPrev, segLabel, segNext, segTag);
     // 提示词显示窗（可编辑，默认显示段号对应段的完整提示词）
+    const editWrap = el("div", "position:relative;width:100%;");
     const edit = document.createElement("textarea");
     edit.spellcheck = false;
     edit.style.cssText = "width:100%;height:190px;box-sizing:border-box;background:#161616;color:#ddd;border:1px solid #444;border-radius:5px;padding:6px 8px;font-size:12px;resize:none;outline:none;overflow-y:auto;white-space:pre-wrap;word-break:break-word;line-height:1.5;";
     edit.placeholder = "当前段的完整提示词显示在这里，可在此二度修改…";
     edit.addEventListener("mousedown", (e) => e.stopPropagation());
+    editWrap.appendChild(edit);
+    // 右上角悬浮：复制全部文本 / 放大编辑
+    const eActions = el("div", "position:absolute;top:4px;right:4px;display:flex;gap:4px;opacity:0;transition:opacity .15s;z-index:6;");
+    const eCopy = el("button", "width:24px;height:24px;border-radius:4px;border:1px solid #555;background:rgba(30,30,30,.92);color:#ccc;font-size:12px;cursor:pointer;line-height:1;padding:0;", "📋");
+    eCopy.title = "复制全部文本";
+    const eZoom = el("button", "width:24px;height:24px;border-radius:4px;border:1px solid #555;background:rgba(30,30,30,.92);color:#ccc;font-size:12px;cursor:pointer;line-height:1;padding:0;", "⛶");
+    eZoom.title = "放大编辑（打开大界面）";
+    eActions.append(eCopy, eZoom);
+    editWrap.appendChild(eActions);
+    editWrap.addEventListener("mouseenter", () => { eActions.style.opacity = "1"; });
+    editWrap.addEventListener("mouseleave", () => { eActions.style.opacity = "0"; });
+    eCopy.addEventListener("mousedown", (e) => e.stopPropagation());
+    eCopy.addEventListener("click", (e) => { e.stopPropagation(); copyTextToClipboard(edit.value, "重拍提示词"); });
+    eZoom.addEventListener("mousedown", (e) => e.stopPropagation());
+    eZoom.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openTextZoomEditor("🔄 重拍提示词（放大编辑）", () => edit.value, (text) => {
+            edit.value = text;
+            if (state) { state.prompt = text; commit(); }
+        }, self);
+    });
 
-    body.append(selRow, segRow, edit);
+    body.append(selRow, segRow, editWrap);
 
     // 状态（持久到 manager_settings.reshoot，刷新不丢失；source 记录提示词来源显示）
     const state = self.__reshootState || (self.__reshootState = { script: "", shots: [], selected: 0, prompt: "", expanded: false, source: "" });
@@ -750,6 +884,8 @@ function createReshootSection(ctx) {
         edit.value = state.prompt;
         segLabel.textContent = `当前选择重拍第 ${idx + 1} 段视频`;
         segTag.textContent = `（共 ${state.shots.length} 段）`;
+        // Mini：段号同步到「重拍视频编号」参数（编码选段用）
+        if (isMini && reshootSegWidget) setWidgetValue(reshootSegWidget, idx + 1);
         commit();
     };
     segPrev.title = "上一段";
@@ -874,33 +1010,38 @@ function createReshootSection(ctx) {
     header.addEventListener("mousedown", (e) => e.stopPropagation());
     header.addEventListener("click", toggle);
 
-    // 重拍运行拦截：重拍模式展开且已加载提示词时，点击「运行」自动以穿透模式+单段生成选中段。
+    // 重拍运行拦截：仅 Pro 生效（重拍模式展开且已加载提示词时，点「运行」自动以穿透模式+单段生成选中段）。
     // apply 在 queuePrompt 提交前临时改参数，restore 在提交后恢复（不污染主提示词/普通模式）。
-    self.__reshootBuildRunPatch = () => {
-        if (!expanded || !state.shots.length) return null;   // 收起或无数据时不拦截
-        const p = edit.value.trim();
-        if (!p) return null;
-        const rmW = (self.widgets || []).find((w) => w.name === "run_mode");
-        const vcW = (self.widgets || []).find((w) => w.name === "video_count");
-        const backupRM = rmW ? readWidgetValue(rmW) : null;
-        const backupVC = vcW ? readWidgetValue(vcW) : null;
-        const backupIP = ipWidget ? readWidgetValue(ipWidget) : "";
-        const single = `[SHOT_START]\n${p}\n[SHOT_END]`;
-        return {
-            apply() {
-                if (rmW) setWidgetValue(rmW, "穿透生成模式");
-                if (vcW) setWidgetValue(vcW, 1);
-                if (ipWidget) setWidgetValue(ipWidget, single);
-            },
-            restore() {
-                try {
-                    if (rmW && backupRM !== null) setWidgetValue(rmW, backupRM);
-                    if (vcW && backupVC !== null) setWidgetValue(vcW, backupVC);
-                    if (ipWidget) setWidgetValue(ipWidget, backupIP);
-                } catch (_) {}
-            },
+    // Mini 不做运行拦截（用「重拍视频编号」参数选段编码），挂空补丁避免 graphToPrompt 处理。
+    if (!isMini) {
+        self.__reshootBuildRunPatch = () => {
+            if (!expanded || !state.shots.length) return null;   // 收起或无数据时不拦截
+            const p = edit.value.trim();
+            if (!p) return null;
+            const rmW = (self.widgets || []).find((w) => w.name === "run_mode");
+            const vcW = (self.widgets || []).find((w) => w.name === "video_count");
+            const backupRM = rmW ? readWidgetValue(rmW) : null;
+            const backupVC = vcW ? readWidgetValue(vcW) : null;
+            const backupIP = ipWidget ? readWidgetValue(ipWidget) : "";
+            const single = `[SHOT_START]\n${p}\n[SHOT_END]`;
+            return {
+                apply() {
+                    if (rmW) setWidgetValue(rmW, "穿透生成模式");
+                    if (vcW) setWidgetValue(vcW, 1);
+                    if (ipWidget) setWidgetValue(ipWidget, single);
+                },
+                restore() {
+                    try {
+                        if (rmW && backupRM !== null) setWidgetValue(rmW, backupRM);
+                        if (vcW && backupVC !== null) setWidgetValue(vcW, backupVC);
+                        if (ipWidget) setWidgetValue(ipWidget, backupIP);
+                    } catch (_) {}
+                },
+            };
         };
-    };
+    } else {
+        self.__reshootBuildRunPatch = () => null;
+    }
 
     // 刷新时恢复（由 onNodeCreated 的 loadManager.then 调用）
     const refresh = (settings) => {
@@ -1012,6 +1153,152 @@ function el(tag, css, text) {
     if (css) e.style.cssText = css;
     if (text !== undefined) e.textContent = text;
     return e;
+}
+
+// ── 文本复制 / 放大编辑（主提示词框与重拍编辑窗右上角悬浮按钮）──
+function copyTextToClipboard(text, label) {
+    if (!text) { notify("没有可复制的内容", "warning"); return; }
+    const done = () => notify(`已复制${label ? ` ${label}` : ""}`, "success");
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(() => { fallbackCopyText(text); done(); });
+        } else {
+            fallbackCopyText(text); done();
+        }
+    } catch (_) { fallbackCopyText(text); done(); }
+}
+function fallbackCopyText(text) {
+    try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.cssText = "position:fixed;top:-999px;opacity:0;";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+    } catch (_) {}
+}
+function openTextZoomEditor(title, getText, onSave, node) {
+    document.querySelectorAll(".jzl-zoom-editor").forEach((m) => m.remove());
+    const modal = el("div", "position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:99999;display:flex;align-items:center;justify-content:center;");
+    modal.classList.add("jzl-zoom-editor");
+    const box = el("div", "width:82%;max-width:1000px;height:82%;max-height:820px;background:var(--comfy-menu-bg,#242424);border:1px solid var(--border-color,#555);border-radius:8px;display:flex;flex-direction:column;padding:12px;box-sizing:border-box;box-shadow:0 8px 40px rgba(0,0,0,.5);");
+    const head = el("div", "display:flex;align-items:center;gap:8px;margin-bottom:10px;flex:0 0 auto;flex-wrap:wrap;");
+    head.appendChild(el("span", "font-size:14px;font-weight:600;color:#eee;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;", title));
+    // 主体：左 = contenteditable 编辑器，右 = 资产显示窗（点击插入 @）
+    const body = el("div", "flex:1 1 auto;display:flex;min-height:0;");
+    // 内容区：contenteditable（支持 @token 富文本显示）
+    const editor = document.createElement("div");
+    editor.contentEditable = "true";
+    editor.spellcheck = false;
+    editor.style.cssText = "flex:1 1 auto;min-width:0;width:100%;box-sizing:border-box;background:#161616;color:#ddd;border:1px solid #444;border-radius:5px;padding:10px 12px;font-size:13px;overflow-y:auto;outline:none;white-space:pre-wrap;word-break:break-word;line-height:1.6;";
+    editor.addEventListener("mousedown", (e) => e.stopPropagation());
+    // 初始显示模式：跟随节点参考元素模式（ref=显示引用着色；text=纯文本）
+    let alignMode = node ? (node.__jzlAlignMode === "ref" ? "ref" : "text") : "text";
+    const renderInitial = () => {
+        if (node && alignMode === "ref") renderPromptFromText(editor, getText(), node);
+        else { editor.innerHTML = ""; editor.appendChild(document.createTextNode(getText() || "")); }
+    };
+    renderInitial();
+    // 参考元素切换（在「复制」前面）：纯文本 / 显示引用
+    const aBtn = el("button", "flex:0 0 auto;height:28px;padding:0 10px;border-radius:5px;border:1px solid #5b9bd5;background:#2a4a6a;color:#cfe3f7;font-size:12px;cursor:pointer;white-space:nowrap;",
+        node && alignMode === "ref" ? "🎯 纯文本" : "🎯 显示引用");
+    aBtn.title = "参考元素切换（纯文本 / 显示引用）";
+    aBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+    aBtn.addEventListener("click", () => {
+        if (alignMode === "text") {
+            renderPromptFromText(editor, getPromptText(editor), node);
+            alignMode = "ref";
+            aBtn.textContent = "🎯 纯文本";
+            notify("✅ 已切换为显示引用（素材名着色）", "success");
+        } else {
+            const text = getPromptText(editor);
+            editor.innerHTML = "";
+            editor.appendChild(document.createTextNode(text));
+            alignMode = "text";
+            aBtn.textContent = "🎯 显示引用";
+            notify("✅ 已切换为纯文本", "success");
+        }
+    });
+    const cBtn = el("button", "flex:0 0 auto;height:28px;padding:0 12px;border-radius:5px;border:1px solid #5b9bd5;background:#3a3a3a;color:#eee;font-size:12px;cursor:pointer;", "📋 复制");
+    cBtn.addEventListener("mousedown", (e) => e.stopPropagation());
+    cBtn.addEventListener("click", () => copyTextToClipboard(getPromptText(editor), ""));
+    const sBtn = el("button", "flex:0 0 auto;height:28px;padding:0 12px;border-radius:5px;border:1px solid #5ecf8a;background:#2d5a3a;color:#fff;font-size:12px;cursor:pointer;font-weight:600;", "💾 保存");
+    const xBtn = el("button", "flex:0 0 auto;height:28px;padding:0 12px;border-radius:5px;border:1px solid #666;background:#3a3a3a;color:#ccc;font-size:12px;cursor:pointer;", "取消");
+    if (node) head.append(aBtn);
+    head.append(cBtn, sBtn, xBtn);
+    // 资产显示窗（点击素材插入 @ 引用到放大编辑器；仅当节点存在时显示）
+    if (node) {
+        editor.__node = node;  // insertAssetToken 内部会自动激活主节点「显示引用」模式
+        const zoomCaret = { value: null };  // 放大编辑器独立光标记忆（与主框全局 promptCaretPos 隔离）
+        const syncZoomCaret = () => { zoomCaret.value = caretOffset(editor); rememberCaret(editor); };
+        editor.addEventListener("input", syncZoomCaret);   // 中文输入法(IME)只触发 input → 必须监听
+        editor.addEventListener("keyup", syncZoomCaret);
+        editor.addEventListener("click", syncZoomCaret);
+        // 回车：统一插入 \n 文本，避免 Chrome 生成 <div><br></div> 干扰（根本修复）
+        editor.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.isComposing) {
+                e.preventDefault();
+                e.stopPropagation();
+                const _sel = window.getSelection();
+                if (_sel && _sel.rangeCount && editor.contains(_sel.anchorNode)) {
+                    const r0 = _sel.getRangeAt(0);
+                    r0.deleteContents();
+                    const tn = document.createTextNode("\n");
+                    r0.insertNode(tn);
+                    const r2 = document.createRange();
+                    r2.setStartAfter(tn);
+                    r2.collapse(true);
+                    _sel.removeAllRanges();
+                    _sel.addRange(r2);
+                    editor.dispatchEvent(new Event("input", { bubbles: true }));
+                }
+            }
+        });
+        // 粘贴：统一为含 \n 的 textNode（不生成 br/div）
+        editor.addEventListener("paste", (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            const _t = (e.clipboardData || window.clipboardData)?.getData("text/plain") || "";
+            if (!_t) return;
+            const _sel = window.getSelection();
+            let _range = null;
+            if (_sel && _sel.rangeCount && editor.contains(_sel.anchorNode)) _range = _sel.getRangeAt(0);
+            if (!_range) { _range = document.createRange(); _range.selectNodeContents(editor); _range.collapse(false); }
+            _range.deleteContents();
+            _range.insertNode(document.createTextNode(String(_t).replace(/\r\n/g, "\n")));
+            _range.collapse(false);
+            _sel.removeAllRanges();
+            _sel.addRange(_range);
+            editor.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        const assetCol = el("div", "flex:0 0 264px;display:flex;flex-direction:column;margin-left:10px;min-height:0;");
+        const assetTitle = el("div", "font-size:12px;color:#bbb;margin-bottom:6px;flex:0 0 auto;", "📁 资产显示窗（点击插入）");
+        const assetScroll = el("div", "flex:1 1 auto;overflow-y:auto;min-height:0;border:1px solid #333;border-radius:5px;background:#1a1a1a;padding:4px;box-sizing:border-box;");
+        const assetBox = el("div", "min-height:30px;");
+        assetScroll.appendChild(assetBox);
+        assetCol.append(assetTitle, assetScroll);
+        body.append(editor, assetCol);
+        renderAssetWindow(assetBox, editor, node, () => {
+            // 点击资产插入后 → 放大编辑器同步切到「显示引用」（与主节点行为一致）
+            alignMode = "ref";
+            aBtn.textContent = "🎯 纯文本";
+        }, (ed, item) => insertAssetToken(ed, item, zoomCaret));
+    } else {
+        body.appendChild(editor);
+    }
+    const close = () => modal.remove();
+    sBtn.addEventListener("click", () => {
+        try { onSave(getPromptText(editor)); } catch (e) { notify("保存失败：" + e.message, "error"); return; }
+        close();
+        notify("已保存", "success");
+    });
+    xBtn.addEventListener("click", close);
+    modal.addEventListener("mousedown", (e) => { if (e.target === modal) close(); });
+    box.append(head, body);
+    modal.appendChild(box);
+    document.body.appendChild(modal);
+    setTimeout(() => editor.focus(), 50);
 }
 
 function makeSectionTitle(text) {
@@ -1128,6 +1415,7 @@ function makeAssetCard(kind, index, item, list, onEdit, onDelete, isLast, refres
     const thumb = el("div", "flex:0 0 44px;width:44px;height:44px;border-radius:5px;border:1px solid var(--border-color,#444);background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden;font-size:18px;");
     let imgEl = null;
     let refreshAudio = null;  // 音频试听刷新（kind==="audio" 时赋值）
+    let refreshVideo = null;  // 视频已选反馈（kind==="video" 时赋值）
     const refreshThumb = () => {
         if (kind !== "image" || !imgEl) return;
         const p = (item.path || "").trim();
@@ -1186,8 +1474,19 @@ function makeAssetCard(kind, index, item, list, onEdit, onDelete, isLast, refres
         thumb.title = "音频试听";
         refreshAudio();
     } else {
+        // 视频：空槽黑底🎬；已选蓝底 + title 显示路径（修复上传后无反馈，误以为无法上传视频）
+        refreshVideo = () => {
+            const p = (item.path || "").trim();
+            if (p) {
+                thumb.style.background = "#2d5a88";
+                thumb.title = "已选择视频：" + p;
+            } else {
+                thumb.style.background = "#000";
+                thumb.title = "空槽位（未选择视频）";
+            }
+        };
         thumb.textContent = "🎬";
-        thumb.style.background = "#000";
+        refreshVideo();
     }
     row.append(thumb);
 
@@ -1209,7 +1508,7 @@ function makeAssetCard(kind, index, item, list, onEdit, onDelete, isLast, refres
     pickBtn.title = "选择文件";
     pickBtn.addEventListener("click", async () => {
         const p = await chooseFile(kind);
-        if (p) { item.path = p; refreshThumb(); if (refreshAudio) refreshAudio(); onEdit(); }
+        if (p) { item.path = p; refreshThumb(); if (refreshAudio) refreshAudio(); if (typeof refreshVideo === "function") refreshVideo(); onEdit(); }
     });
 
     row.append(nameInp, descInp, pickBtn);
@@ -1429,14 +1728,35 @@ function setupInternalPrompt(node, box, ipWidget) {
     box.addEventListener("input", () => {
         syncInternal();
         const offset = caretOffset(box);
+        box.__lastCaret = offset;  // 自记忆（点素材 mousedown 也用它）
         promptCaretPos = offset;  // 记忆光标位置，供资产窗点击插入
         const before = getPromptText(box).slice(0, offset);
         const m = before.match(/@([^@\s]*)$/);
         if (m) openMentionMenu(box, offset - m[0].length, offset, m[1], node);
         else closeMentionMenu();
     });
-    box.addEventListener("keyup", () => { promptCaretPos = caretOffset(box); });
-    box.addEventListener("click", () => { promptCaretPos = caretOffset(box); });
+    box.addEventListener("keyup", () => { rememberCaret(box); promptCaretPos = caretOffset(box); });
+    box.addEventListener("click", () => { rememberCaret(box); promptCaretPos = caretOffset(box); });
+    // 回车：统一插入「\n」文本（不生成 Chrome 的 <div><br></div>），保证 DOM 只有 textNode+token
+    box.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.isComposing) {
+            e.preventDefault();
+            e.stopPropagation();
+            const _sel = window.getSelection();
+            if (_sel && _sel.rangeCount && box.contains(_sel.anchorNode)) {
+                const r0 = _sel.getRangeAt(0);
+                r0.deleteContents();
+                const tn = document.createTextNode("\n");
+                r0.insertNode(tn);
+                const r2 = document.createRange();
+                r2.setStartAfter(tn);
+                r2.collapse(true);
+                _sel.removeAllRanges();
+                _sel.addRange(r2);
+                box.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+        }
+    });
     box.addEventListener("change", syncInternal);
     // 粘贴：阻止 ComfyUI 画布把剪贴板里的「节点 JSON」粘贴到画布，只插入纯文本到提示词
     box.addEventListener("paste", (e) => {
@@ -1457,7 +1777,7 @@ function setupInternalPrompt(node, box, ipWidget) {
         }
         const frag = document.createDocumentFragment();
         String(text).replace(/\r\n/g, "\n").split("\n").forEach((line, idx) => {
-            if (idx > 0) frag.appendChild(document.createElement("br"));
+            if (idx > 0) frag.appendChild(document.createTextNode("\n"));
             frag.appendChild(document.createTextNode(line));
         });
         range.deleteContents();
@@ -2163,7 +2483,7 @@ const USAGE_FALLBACK_HTML = `
 <p style="margin:6px 0;">一个节点完成 <b>剧本分段 → 参考调度 → 编码 → 采样 → 解码</b> 全流程，输出生成总线，无缝对接「视频保存分配」与 VHS 保存，亦支持 ffmpeg 逐段落盘 / 自动合并。</p>
 <h4 style="margin:10px 0 4px;color:var(--fg-color,#eee);">一、快速上手</h4>
 <ol style="padding-left:20px;margin:4px 0;">
-<li>添加节点：JZL/MiniMax → <code>JZL - 🤖 MiniMax-H3短剧导演台</code></li>
+<li>添加节点：JZL/MiniMax → <code>JZL - 🤖 MiniMax-H3短剧导演台Pro</code></li>
 <li>接好模型输入：主模型 / CLIP / 视觉VAE / 音频VAE（含视频或音频参考时必须接音频VAE）</li>
 <li>在节点表面 📝 提示词 框输入故事 / 剧本（可用 @ 引用素材）</li>
 <li>点「📁 参考素材管理」上传并配置素材（图片 / 视频 / 音频）</li>
@@ -2324,7 +2644,7 @@ function buildModal(node, data, panelId) {
     ensureManagerStyle();
     const settings = (data && data.settings) ? data.settings : defaultSettings();
     const d = data || { llm_models: [], mmproj_models: ["None"], chat_handlers: ["None"] };
-    const title = (PANELS[panelId] && PANELS[panelId].label) || "🎬 JZL - 🤖 MiniMax-H3短剧导演台";
+    const title = (PANELS[panelId] && PANELS[panelId].label) || "🎬 JZL - 🤖 MiniMax-H3短剧导演台Pro";
 
     const overlay = el("div", "position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:9999;display:flex;align-items:center;justify-content:center;");
     const dialog = el("section", "background:#1c1c1e;border:1px solid #333;border-radius:8px;width:820px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 20px 40px rgba(0,0,0,0.6);");
@@ -2459,11 +2779,17 @@ if (!app.__jzlReshootGraphPatched) {
 app.registerExtension({
     name: "JZL.MiniMaxAssetManager",
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData?.name !== NODE_TYPE) return;
+        const isMini = nodeData?.name === MINI_NODE_TYPE;
+        if (nodeData?.name !== NODE_TYPE && !isMini) return;
         const orig = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const r = orig?.apply(this, arguments);
             const self = this;
+            // Mini：删除「视频保存设置」「采样解码设置」按钮（只做资产管理+编码）
+            const buttons = isMini
+                ? PANEL_BUTTONS.filter((b) => b.widget !== "btn_save" && b.widget !== "btn_pref")
+                : PANEL_BUTTONS;
+            self.__jzlButtons = buttons;
 
             // 1. 隐藏内部存储 widget（internal_prompt）与旧 mode
             const vcWidget = (self.widgets || []).find((w) => w.name === "video_count");
@@ -2487,10 +2813,10 @@ app.registerExtension({
             const container = document.createElement("div");
             container.style.cssText = "width:100%;height:100%;display:flex;flex-direction:column;gap:6px;padding:8px;box-sizing:border-box;overflow:hidden;";
 
-            // 按钮区（4×2）
+            // 按钮区（4×2，Mini 剔除保存/采样按钮）
             const btnGrid = document.createElement("div");
             btnGrid.style.cssText = "display:grid;grid-template-columns:repeat(4,1fr);grid-auto-rows:30px;gap:6px;";
-            for (const b of PANEL_BUTTONS) {
+            for (const b of buttons) {
                 const btn = document.createElement("button");
                 btn.textContent = b.label;
                 btn.style.cssText = [
@@ -2552,7 +2878,30 @@ app.registerExtension({
             promptBox.innerText = ipWidget?.value ?? "";
             promptBox.style.cssText = "width:100%;flex:1 1 auto;min-height:60px;box-sizing:border-box;background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:4px;padding:6px 8px;font-size:12px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;";
             promptBox.addEventListener("mousedown", (e) => e.stopPropagation());
-            container.appendChild(promptBox);
+            // 右上角悬浮：复制全部文本 / 放大编辑
+            const promptWrap = el("div", "position:relative;flex:1 1 auto;display:flex;flex-direction:column;min-height:60px;");
+            promptWrap.appendChild(promptBox);
+            const pActions = el("div", "position:absolute;top:4px;right:4px;display:flex;gap:4px;opacity:0;transition:opacity .15s;z-index:6;");
+            const pCopy = el("button", "width:24px;height:24px;border-radius:4px;border:1px solid #555;background:rgba(30,30,30,.92);color:#ccc;font-size:12px;cursor:pointer;line-height:1;padding:0;", "📋");
+            pCopy.title = "复制全部文本";
+            const pZoom = el("button", "width:24px;height:24px;border-radius:4px;border:1px solid #555;background:rgba(30,30,30,.92);color:#ccc;font-size:12px;cursor:pointer;line-height:1;padding:0;", "⛶");
+            pZoom.title = "放大编辑（打开大界面）";
+            pActions.append(pCopy, pZoom);
+            promptWrap.appendChild(pActions);
+            promptWrap.addEventListener("mouseenter", () => { pActions.style.opacity = "1"; });
+            promptWrap.addEventListener("mouseleave", () => { pActions.style.opacity = "0"; });
+            pCopy.addEventListener("mousedown", (e) => e.stopPropagation());
+            pCopy.addEventListener("click", (e) => { e.stopPropagation(); copyTextToClipboard(getPromptText(promptBox), "提示词"); });
+            pZoom.addEventListener("mousedown", (e) => e.stopPropagation());
+            pZoom.addEventListener("click", (e) => {
+                e.stopPropagation();
+                openTextZoomEditor("📝 提示词（放大编辑）", () => getPromptText(promptBox), (text) => {
+                    if (ipWidget) setWidgetValue(ipWidget, text);
+                    if (self.__jzlAlignMode !== "text") renderPromptFromText(promptBox, text, self);
+                    else { promptBox.innerHTML = ""; promptBox.appendChild(document.createTextNode(text)); }
+                }, self);
+            });
+            container.appendChild(promptWrap);
             self.__promptBox = promptBox;
             promptBox.__node = self;
             setupInternalPrompt(self, promptBox, ipWidget);
@@ -2663,7 +3012,7 @@ app.registerExtension({
                     try {
                         // scrollHeight 取完整内容高度（含多行），避免 overflow 把多行素材吞掉
                         const assetsH = windowBox.scrollHeight || windowBox.offsetHeight || 30;
-                        const btnRows = Math.ceil(PANEL_BUTTONS.length / 4);
+                        const btnRows = Math.ceil((self.__jzlButtons || PANEL_BUTTONS).length / 4);
                         const reshootH = (self.__reshootBody && self.__reshootBody.style.display !== "none") ? (self.__reshootBody.offsetHeight || 0) : 0;  // 重拍区展开时计入节点高度
                         const minDom = btnRows * 40 + 10 + 16 + 72 + 22 + assetsH + reshootH + 20;  // 按钮N行 + gap + 信息行 + 提示词min + 资产窗标题 + 重拍区 + padding
                         const y = (self.widgets || []).find((w) => w.name === "jzl_manager")?.y;
@@ -2684,9 +3033,12 @@ app.registerExtension({
             container.appendChild(windowTitle);
             container.appendChild(windowBox);
 
-            // 🔄 重拍模式（底部折叠区）：提示词选择 + 段号(1~99) + 提示词显示窗（可编辑）
+            // 🔄 重拍模式（Pro + Mini）：提示词来源 + 重拍视频编号 + 提示词显示窗（可编辑）
+            // Mini 的重拍视频编号会同步到「重拍视频编号」参数（reshoot_segment）作为编码选段
+            const reshootSegW = isMini ? (self.widgets || []).find((w) => w.name === "reshoot_segment") : null;
             const reshootSection = createReshootSection({
                 self, promptBox, ipWidget, resizeNode: resizeNodeForContent,
+                isMini: !!isMini, reshootSegWidget: reshootSegW,
             });
             container.appendChild(reshootSection.header);
             container.appendChild(reshootSection.body);
