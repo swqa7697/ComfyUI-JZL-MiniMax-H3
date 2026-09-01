@@ -47,6 +47,7 @@ from .nodes_asset_manager import (
     _read_manager_settings,
     _write_manager_settings,
     _resolve_asset_path,
+    _safe_story_name,
     _load_last_script,
 )
 
@@ -328,6 +329,24 @@ async def jzl_audio_preview(request):
         return web.json_response({"error": f"音频读取失败：{exc}"}, status=500)
 
 
+@PromptServer.instance.routes.get("/jzl/video_preview")
+async def jzl_video_preview(request):
+    """视频资产预览：返回视频文件本体（支持 Range 请求，供 <video> 播放/拖动）。"""
+    path = (request.query.get("path") or "").strip()
+    if not path:
+        return web.json_response({"error": "缺少 path"}, status=400)
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in {".mp4", ".mov", ".webm", ".avi", ".mkv"}:
+        return web.json_response({"error": "仅支持视频预览"}, status=400)
+    path = _resolve_asset_path(path)
+    if not path:
+        return web.json_response({"error": "文件不存在"}, status=404)
+    try:
+        return web.FileResponse(path)
+    except Exception as exc:
+        return web.json_response({"error": f"视频读取失败：{exc}"}, status=500)
+
+
 @PromptServer.instance.routes.get("/jzl/manager")
 async def jzl_manager_get(request):
     """读取短剧管理器统一配置 + MiniMax-H3 模型列表 + 本地 LLM 模型列表"""
@@ -400,16 +419,25 @@ async def jzl_assets_post(request):
 
 @PromptServer.instance.routes.post("/jzl/export_assets")
 async def jzl_export_assets(request):
-    """把当前素材库导出为 output/jzl/素材库.txt（UTF-8，可读格式，供跨机器导入）。"""
+    """把当前素材库导出为 output/jzl/参考素材_{故事名}_{年月日时分秒}.txt
+    （UTF-8，可读格式，供跨机器导入）。故事名取自节点「故事名称」widget，空则省略。"""
     try:
         import folder_paths
         payload = await request.json()
         assets = payload.get("assets") if isinstance(payload, dict) else None
+        story_name = (payload.get("story_name") if isinstance(payload, dict) else "") or ""
         if not isinstance(assets, dict):
             return web.json_response({"error": "缺少素材数据"}, status=400)
         out_dir = os.path.join(folder_paths.get_output_directory(), "jzl")
         os.makedirs(out_dir, exist_ok=True)
-        path = os.path.join(out_dir, "素材库.txt")
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        safe_story = _safe_story_name(story_name)
+        if str(story_name).strip():
+            fname = f"参考素材_{safe_story}_{ts}.txt"
+        else:
+            fname = f"参考素材_{ts}.txt"
+        path = os.path.join(out_dir, fname)
 
         def _cl(v):
             return (str(v) if v is not None else "").replace("|", "／").strip()
@@ -464,9 +492,55 @@ def _parse_assets_text(text):
     return assets
 
 
+def _archive_asset(path, kind):
+    """把资产文件归档到 input/jzl/{kind}/ 并返回 input 相对路径（jzl/{kind}/xxx）。
+
+    - 已是 jzl/ 相对路径 → 原样（已归档）
+    - 绝对路径 / 可解析的相对路径 → 若文件在 input/jzl 内则转相对；否则复制到
+      input/jzl/{kind}/ 返回相对路径（复制后原文件可删，跨机器/原文件删除均不影响）
+    - 找不到文件 → 原样返回（保留，加载时另行提示）
+    """
+    p = (path or "").strip()
+    if not p:
+        return p
+    if p.startswith("jzl/") or p.startswith("jzl\\"):
+        return p.replace("\\", "/")
+    import folder_paths, shutil
+    in_dir = os.path.abspath(folder_paths.get_input_directory())
+    jzl_dir = os.path.join(in_dir, "jzl")
+
+    def _abs():
+        if os.path.isfile(p):
+            return os.path.abspath(p)
+        r = _resolve_asset_path(p)
+        return os.path.abspath(r) if r and os.path.isfile(r) else ""
+
+    abs_p = _abs()
+    if not abs_p:
+        return p
+    if abs_p.startswith(jzl_dir + os.sep):
+        return os.path.relpath(abs_p, in_dir).replace("\\", "/")
+    try:
+        kind_dir = os.path.join(jzl_dir, kind)
+        os.makedirs(kind_dir, exist_ok=True)
+        filename = os.path.basename(abs_p)
+        dest = os.path.join(kind_dir, filename)
+        i = 1
+        split = os.path.splitext(filename)
+        while os.path.exists(dest):
+            filename = f"{split[0]} ({i}){split[1]}"
+            dest = os.path.join(kind_dir, filename)
+            i += 1
+        shutil.copy2(abs_p, dest)
+        return os.path.join("jzl", kind, filename).replace("\\", "/")
+    except Exception:
+        return p
+
+
 @PromptServer.instance.routes.post("/jzl/import_assets")
 async def jzl_import_assets(request):
-    """从上传的 txt 文本解析素材库并返回（无 text 时兼容读取默认导出文件）。"""
+    """从上传的 txt 文本解析素材库并返回（无 text 时兼容读取默认导出文件）。
+    解析后统一归档到 input/jzl（复制文件 + 相对路径），原文件删除也不影响。"""
     try:
         import folder_paths
         payload = {}
@@ -483,9 +557,40 @@ async def jzl_import_assets(request):
             with open(path, "r", encoding="utf-8-sig") as f:
                 text = f.read()
         assets = _parse_assets_text(text)
+        _kind_map = {"images": "image", "videos": "video", "audios": "audio"}
+        for _key, _kind in _kind_map.items():
+            for _item in assets.get(_key) or []:
+                if isinstance(_item, dict):
+                    _item["path"] = _archive_asset(_item.get("path"), _kind)
         return web.json_response({"ok": True, "assets": assets})
     except Exception as exc:
         return web.json_response({"error": f"导入失败：{exc}"}, status=500)
+
+
+@PromptServer.instance.routes.post("/jzl/archive_assets")
+async def jzl_archive_assets(request):
+    """把资产 path 统一归档为 input/jzl 相对路径（复制文件到 input/jzl/{kind}）。
+
+    供前端加载/保存资产时调用：无论素材来自上传、导入 txt（可能记录源文件绝对路径）
+    还是历史遗留，都归档到 input/jzl 并返回 jzl/{kind}/xxx 相对路径 —— 之后读取/导出
+    都用 input/jzl 里的副本，原文件删除也不影响。"""
+    try:
+        payload = await request.json() or {}
+        assets = payload.get("assets") if isinstance(payload, dict) else None
+        if not isinstance(assets, dict):
+            return web.json_response({"error": "缺少素材数据"}, status=400)
+        _kind_map = {"images": "image", "videos": "video", "audios": "audio"}
+        archived = {"images": [], "videos": [], "audios": []}
+        for key, kind in _kind_map.items():
+            for item in assets.get(key) or []:
+                if not isinstance(item, dict):
+                    continue
+                item = dict(item)
+                item["path"] = _archive_asset(item.get("path"), kind)
+                archived[key].append(item)
+        return web.json_response({"ok": True, "assets": archived})
+    except Exception as exc:
+        return web.json_response({"error": f"归档失败：{exc}"}, status=500)
 
 
 @PromptServer.instance.routes.post("/jzl/choose_asset_file")

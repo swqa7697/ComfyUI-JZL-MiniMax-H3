@@ -1092,6 +1092,36 @@ async function loadLists() {
     }
 }
 
+// 资产归档：把非 jzl/ 开头的素材路径（源文件绝对路径 / 历史遗留 / 导入 txt 记录的原路径）
+// 交给后端复制到 input/jzl/{kind} 并统一为相对路径（jzl/{kind}/xxx），回写 manager_settings。
+// 之后读取/导出都用 input/jzl 里的副本，原文件删除也毫无影响。
+async function archiveAssets(node, settings) {
+    const assets = settings?.assets;
+    if (!assets || typeof assets !== "object") return false;
+    const needs = ["images", "videos", "audios"].some((k) =>
+        (assets[k] || []).some((it) => {
+            const p = (it?.path || "").trim();
+            return p && !/^jzl[\\/]/i.test(p);  // 有非 jzl/ 相对路径的素材 → 需要归档
+        })
+    );
+    if (!needs) return false;  // 全部已是相对路径 → 无需归档（幂等）
+    try {
+        const resp = await api.fetchApi("/jzl/archive_assets", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ assets }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (data?.ok && data.assets) {
+            settings.assets = data.assets;
+            if (node) node.__jzlAssets = data.assets;
+            try { await saveManager(node, settings); } catch (_) {}
+            return true;
+        }
+    } catch (_) {}
+    return false;
+}
+
 async function loadManager(node) {
     // 节点独立配置：优先读工作流内保存的 manager_settings；空则全新默认（不继承其他节点/全局）。
     // 先 await loadLists 再读 widget：configure 在 onNodeCreated 之后才恢复 manager_settings 值，
@@ -1103,7 +1133,10 @@ async function loadManager(node) {
     if (raw && typeof raw === "string" && raw.trim()) {
         try { const s = JSON.parse(raw); if (s && typeof s === "object") settings = s; } catch (_) {}
     }
-    return { settings: settings || defaultSettings(), ...lists };
+    settings = settings || defaultSettings();
+    // 资产归档：把源文件绝对路径素材复制到 input/jzl 并统一为相对路径（原文件删除不影响）
+    try { await archiveAssets(node, settings); } catch (_) {}
+    return { settings, ...lists };
 }
 
 async function saveManager(node, value) {
@@ -1182,7 +1215,7 @@ function openTextZoomEditor(title, getText, onSave, node) {
     document.querySelectorAll(".jzl-zoom-editor").forEach((m) => m.remove());
     const modal = el("div", "position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:99999;display:flex;align-items:center;justify-content:center;");
     modal.classList.add("jzl-zoom-editor");
-    const box = el("div", "width:82%;max-width:1000px;height:82%;max-height:820px;background:var(--comfy-menu-bg,#242424);border:1px solid var(--border-color,#555);border-radius:8px;display:flex;flex-direction:column;padding:12px;box-sizing:border-box;box-shadow:0 8px 40px rgba(0,0,0,.5);");
+    const box = el("div", "width:84%;max-width:1040px;height:92%;max-height:920px;background:var(--comfy-menu-bg,#242424);border:1px solid var(--border-color,#555);border-radius:8px;display:flex;flex-direction:column;padding:12px;box-sizing:border-box;box-shadow:0 8px 40px rgba(0,0,0,.5);");
     const head = el("div", "display:flex;align-items:center;gap:8px;margin-bottom:10px;flex:0 0 auto;flex-wrap:wrap;");
     head.appendChild(el("span", "font-size:14px;font-weight:600;color:#eee;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;", title));
     // 主体：左 = contenteditable 编辑器，右 = 资产显示窗（点击插入 @）
@@ -1272,9 +1305,11 @@ function openTextZoomEditor(title, getText, onSave, node) {
             _sel.addRange(_range);
             editor.dispatchEvent(new Event("input", { bubbles: true }));
         });
-        const assetCol = el("div", "flex:0 0 264px;display:flex;flex-direction:column;margin-left:10px;min-height:0;");
+        const assetCol = el("div", "flex:0 0 284px;display:flex;flex-direction:column;margin-left:10px;min-height:0;");
         const assetTitle = el("div", "font-size:12px;color:#bbb;margin-bottom:6px;flex:0 0 auto;", "📁 资产显示窗（点击插入）");
-        const assetScroll = el("div", "flex:1 1 auto;overflow-y:auto;min-height:0;border:1px solid #333;border-radius:5px;background:#1a1a1a;padding:4px;box-sizing:border-box;");
+        // 素材多时出现滚动条会占 ~17px 宽度，把 3 列挤成 2 列：scrollbar-gutter:stable 让滚动条占固定 gutter 不压缩内容宽度，
+        // 配 284px 列宽（284-2边框-8内边距-17滚动条=257px ≥ 3列所需 246px），有无滚动条都稳定 3 列。
+        const assetScroll = el("div", "flex:1 1 auto;overflow-y:auto;min-height:0;scrollbar-gutter:stable;border:1px solid #333;border-radius:5px;background:#1a1a1a;padding:4px;box-sizing:border-box;");
         const assetBox = el("div", "min-height:30px;");
         assetScroll.appendChild(assetBox);
         assetCol.append(assetTitle, assetScroll);
@@ -1340,6 +1375,21 @@ function showFullImage(path) {
     img.onerror = () => { img.remove(); overlay.append(el("div", "color:#999;font-size:14px;", "原图加载失败")); };
     overlay.appendChild(img);
     overlay.addEventListener("click", () => overlay.remove());
+    document.body.appendChild(overlay);
+}
+
+function showVideoPreview(path) {
+    // 弹窗预览视频（浏览器原生控制条，支持播放/暂停/全屏；点空白处关闭）
+    const overlay = el("div", "position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:10002;display:flex;align-items:center;justify-content:center;cursor:zoom-out;");
+    const v = document.createElement("video");
+    v.src = api.apiURL(`/jzl/video_preview?path=${encodeURIComponent(path)}`);
+    v.controls = true;
+    v.autoplay = true;
+    v.playsInline = true;
+    v.style.cssText = "max-width:94vw;max-height:94vh;object-fit:contain;border-radius:4px;background:#000;outline:none;box-shadow:0 10px 40px rgba(0,0,0,0.6);";
+    v.onerror = () => { v.remove(); overlay.append(el("div", "color:#999;font-size:14px;", "视频加载失败")); };
+    overlay.appendChild(v);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
     document.body.appendChild(overlay);
 }
 
@@ -1465,27 +1515,35 @@ function makeAssetCard(kind, index, item, list, onEdit, onDelete, isLast, refres
             }
             if (!audioEl) {
                 audioEl = new Audio();
-                audioEl.src = api.apiURL(`${AUDIO_PREVIEW_ENDPOINT}?path=${encodeURIComponent(p)}`);
                 audioEl.onended = () => { playBtn.textContent = "▶"; };
                 audioEl.onerror = () => { playBtn.textContent = "▶"; };
             }
+            // 每次点击都把 src 同步到当前路径：上传/替换后立即生效（避免播旧音频，需保存重开才能播）
+            const wantSrc = api.apiURL(`${AUDIO_PREVIEW_ENDPOINT}?path=${encodeURIComponent(p)}`);
+            if (audioEl.src !== wantSrc) audioEl.src = wantSrc;
             audioEl.play().then(() => { playBtn.textContent = "⏸"; }).catch(() => { playBtn.textContent = "▶"; });
         });
         thumb.title = "音频试听";
         refreshAudio();
     } else {
-        // 视频：空槽黑底🎬；已选蓝底 + title 显示路径（修复上传后无反馈，误以为无法上传视频）
+        // 视频：空槽黑底🎬；已选蓝底 + 点击缩略图弹窗预览播放
         refreshVideo = () => {
             const p = (item.path || "").trim();
             if (p) {
                 thumb.style.background = "#2d5a88";
-                thumb.title = "已选择视频：" + p;
+                thumb.style.cursor = "pointer";
+                thumb.title = "已选择视频（点击预览播放）：" + p;
             } else {
                 thumb.style.background = "#000";
+                thumb.style.cursor = "default";
                 thumb.title = "空槽位（未选择视频）";
             }
         };
         thumb.textContent = "🎬";
+        thumb.addEventListener("click", () => {
+            const p = (item.path || "").trim();
+            if (p) showVideoPreview(p);
+        });
         refreshVideo();
     }
     row.append(thumb);
@@ -2043,6 +2101,8 @@ function defaultSettings() {
     return {
         auto_save: true,
         align_mode: "text",
+        // 视频保存设置（并入节点配置，不占 schema widget → 节点表面无隐藏保存接口）
+        save: { mode: "分段保存", auto_save: false, auto_merge: false, auto_merge_delete: false },
         models: {
             fl2va: { model: "", loras: [] },
             ref2va: { model: "", loras: [] },
@@ -2123,7 +2183,7 @@ function buildRefIntro(assets) {
     return { image: fmt(out.image), video: fmt(out.video), audio: fmt(out.audio) };
 }
 
-function renderAssetsTools(c, s, build) {
+function renderAssetsTools(c, s, build, node) {
     c.append(makeSectionTitle("素材库导入导出"));
     const row = el("div", "display:flex;align-items:center;gap:8px;margin:0 0 4px;");
     const exp = el("button", "flex:1 1 0;background:#2a4a6a;color:#cfe3f7;border:1px solid #5b9bd5;border-radius:4px;padding:7px 10px;font-size:12px;cursor:pointer;white-space:nowrap;", "⬆️ 导出素材库");
@@ -2134,18 +2194,24 @@ function renderAssetsTools(c, s, build) {
         status.style.color = isErr ? "#e08a8a" : "#9fd6a4";
         try { notify(msg, isErr ? "error" : "success"); } catch (_) {}
     };
-    exp.title = "把当前已添加的素材保存为 output/jzl/素材库.txt";
+    exp.title = "把当前已添加的素材保存为 output/jzl/参考素材_{故事名}_{年月日时分秒}.txt";
     imp.title = "选择素材库 txt 文件并载入（覆盖当前列表）";
     exp.addEventListener("click", async () => {
         exp.disabled = true; say("正在导出…");
         try {
+            // 故事名取节点「故事名称」widget（未填则后端用时间戳命名）
+            const sw = (node?.widgets || []).find((x) => x.name === "story_name");
+            const storyName = sw ? readWidgetValue(sw) : "";
             const resp = await api.fetchApi("/jzl/export_assets", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ assets: s.assets || { images: [], videos: [], audios: [] } }),
+                body: JSON.stringify({ assets: s.assets || { images: [], videos: [], audios: [] }, story_name: storyName }),
             });
             const data = await resp.json().catch(() => ({}));
-            if (data?.ok) say("✅ 已导出：output/jzl/素材库.txt");
+            if (data?.ok) {
+                const fn = data.path ? String(data.path).split(/[\\/]/).pop() : "参考素材_*.txt";
+                say(`✅ 已导出：output/jzl/${fn}`);
+            }
             else say(`❌ ${data?.error || ("导出失败（HTTP " + resp.status + "）——请确认已重启 ComfyUI 且新版已部署")}`, true);
             console.log("[JZL 素材库] export resp", resp.status, data);
         } catch (e) { say(`❌ 导出失败：${(e && e.message) || e}`, true); console.error(e); }
@@ -2419,17 +2485,11 @@ function renderPrefPanel(c, s, d) {
     c.append(field("音频解码", el("div", "font-size:13px;color:var(--fg-color,#ddd);padding:6px 10px;background:var(--comfy-input-bg,#2a2a2a);border:1px solid var(--border-color,#444);border-radius:4px;", "VAE解码（音频）")));
 }
 
-// ── 💾 视频保存设置面板（读写隐藏 schema widget） ─────────────────
-// 节点表面的「保存模式」已移入本面板；新增「分段视频自动保存 / 分段视频自动合并」+ 路径。
-// 这些值直接写入隐藏 widget（save_mode/auto_save/auto_save_path/auto_merge/auto_merge_path），
-// 随工作流序列化，execute 直接读取，不经过 manager_settings。
-function renderSaveSettingsPanel(c, node, d) {
-    const w = (name) => (node?.widgets || []).find((x) => x.name === name);
-    const saveModeW = w("save_mode");
-    const autoSaveW = w("auto_save");
-    const autoMergeW = w("auto_merge");
-    const autoMergeDelW = w("auto_merge_delete");
-    const val = (ww, dflt) => (ww ? readWidgetValue(ww) : undefined) ?? dflt;
+// ── 💾 视频保存设置面板（读写 manager_settings.save，不占节点 schema widget） ──
+// 保存模式/分段自动保存/自动合并等已并入节点配置 settings.save，随工作流保存，
+// 不再作为 schema 输入 → 节点表面无隐藏保存接口（悬停不显示、也不能接线）。
+function renderSaveSettingsPanel(c, settings, node, d) {
+    const save = settings.save || (settings.save = { mode: "分段保存", auto_save: false, auto_merge: false, auto_merge_delete: false });
     // 保存/合并位置固定为运行中 ComfyUI 的 output/jzl（运行时可推导，不写死盘符，不可修改，只读显示）
     const saveDir = (d && d.save_dir) || "output/jzl";
     const locRow = (label) => {
@@ -2441,33 +2501,33 @@ function renderSaveSettingsPanel(c, node, d) {
 
     // 保存设置（原有下游 VHS 保存逻辑，已移入面板）
     c.append(makeSectionTitle("保存设置"));
-    c.append(field("保存模式", selectControl(["分段保存", "拼接保存"], val(saveModeW, "分段保存"),
-        (v) => { if (saveModeW) setWidgetValue(saveModeW, v); })));
+    c.append(field("保存模式", selectControl(["分段保存", "拼接保存"], save.mode,
+        (v) => { save.mode = v; })));
     c.append(el("div", "font-size:12px;color:var(--descrip-text,#999);margin:-4px 0 6px 172px;line-height:1.6;",
         "分段保存=按顺序批量输出每段图像/音频（接「视频保存分配→VHS」）；拼接保存=全部生成后拼接成一段再输出。此选项只影响下游 VHS 保存方式，保留原有逻辑。"));
 
     // 分段视频自动保存（ffmpeg 逐段落盘，位置固定 output/jzl）
     c.append(makeSectionTitle("ffmpeg 逐段落盘"));
-    const asRow = field("分段视频自动保存", checkboxControl(!!val(autoSaveW, false),
+    const asRow = field("分段视频自动保存", checkboxControl(!!save.auto_save,
         "每段跑完立刻用 ffmpeg 落盘 mp4（不依赖下游 VHS）",
-        (v) => { if (autoSaveW) setWidgetValue(autoSaveW, v); sync(); }));
+        (v) => { save.auto_save = !!v; sync(); }));
     const asLoc = locRow("保存位置：");
     c.append(asRow, asLoc);
 
     // 分段视频自动合并（合并输出位置固定 output/jzl）
     c.append(makeSectionTitle("分段视频自动合并"));
-    const amRow = field("分段视频自动合并", checkboxControl(!!val(autoMergeW, false),
+    const amRow = field("分段视频自动合并", checkboxControl(!!save.auto_merge,
         "把落盘的 mp4 按顺序拼接为完整一个视频（无论保存模式；未开自动保存时内部临时落盘）",
-        (v) => { if (autoMergeW) setWidgetValue(autoMergeW, v); sync(); }));
-    const amDelRow = field("合并后删除分段视频", checkboxControl(!!val(autoMergeDelW, false),
+        (v) => { save.auto_merge = !!v; sync(); }));
+    const amDelRow = field("合并后删除分段视频", checkboxControl(!!save.auto_merge_delete,
         "合并完成后删除各分段 mp4（仅保留合并结果；未开自动保存时的临时分段本就会清理）",
-        (v) => { if (autoMergeDelW) setWidgetValue(autoMergeDelW, v); }));
+        (v) => { save.auto_merge_delete = !!v; }));
     const amLoc = locRow("合并输出位置：");
     c.append(amRow, amLoc, amDelRow);
 
     const sync = () => {
-        const as = !!val(autoSaveW, false);
-        const am = !!val(autoMergeW, false);
+        const as = !!save.auto_save;
+        const am = !!save.auto_merge;
         asLoc.style.display = as ? "" : "none";
         amLoc.style.display = am ? "" : "none";
         amDelRow.style.display = am ? "" : "none";
@@ -2666,7 +2726,7 @@ function buildModal(node, data, panelId) {
             const buildAssets = () => {
                 panelBox.innerHTML = "";
                 renderAutoSave(panelBox, settings);
-                renderAssetsTools(panelBox, settings, buildAssets);
+                renderAssetsTools(panelBox, settings, buildAssets, node);
                 renderAssetsPanel(panelBox, settings, d.mode);
             };
             buildAssets();
@@ -2675,7 +2735,7 @@ function buildModal(node, data, panelId) {
         case "prompt": renderPromptPanel(panelBox, settings, d, node); break;
         case "preference": renderPrefPanel(panelBox, settings, d); break;
         case "preference_settings": renderPreferenceSettingsPanel(panelBox, settings); break;
-        case "save_settings": renderSaveSettingsPanel(panelBox, node, d); break;
+        case "save_settings": renderSaveSettingsPanel(panelBox, settings, node, d); break;
         case "help": renderHelpPanel(panelBox); break;
         default: renderAutoSave(panelBox, settings);
     }
@@ -2794,8 +2854,7 @@ app.registerExtension({
             // 1. 隐藏内部存储 widget（internal_prompt）与旧 mode
             const vcWidget = (self.widgets || []).find((w) => w.name === "video_count");
             const ipWidget = (self.widgets || []).find((w) => w.name === "internal_prompt");
-            const hiddenNames = new Set(["mode", "internal_prompt", "manager_settings",
-                "save_mode", "auto_save", "auto_save_path", "auto_merge", "auto_merge_path", "auto_merge_delete"]);
+            const hiddenNames = new Set(["mode", "internal_prompt", "manager_settings"]);
             for (const w of self.widgets || []) {
                 if (!w) continue;
                 const nm = w.name || "";

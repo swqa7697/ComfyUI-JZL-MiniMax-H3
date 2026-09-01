@@ -184,7 +184,13 @@ def _write_asset_settings(data):
 
 # ── 短剧管理器统一配置（模型/资产/文本增强/生成参数/采样解码） ──────
 MANAGER_DEFAULTS = {
-    "auto_save": True,
+    "auto_save": True,  # 弹窗「自动保存」开关（面板改动自动保存行为，非分段视频自动保存）
+    "save": {  # 视频保存设置（存 manager_settings，不占节点 schema widget → 节点表面无隐藏接口）
+        "mode": "分段保存",
+        "auto_save": False,   # 分段视频自动保存（ffmpeg 逐段落盘）
+        "auto_merge": False,  # 分段视频自动合并
+        "auto_merge_delete": False,  # 合并后删除分段视频
+    },
     "models": {
         "fl2va": {
             "model": "",
@@ -1836,21 +1842,6 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
                     tooltip="二采（Ref2va）放大倍数"),
                 io.Int.Input("video_count", display_name="生成视频数量", default=6, min=1, max=48,
                     tooltip="生成视频数量（分段数，支持 1~48 任意值；统一控制：提示词拆解段数 / 分发列表数 / 采样数 / 分段保存数）"),
-                io.Combo.Input("save_mode", options=["分段保存", "拼接保存"], default="分段保存",
-                    display_name="保存模式", advanced=True,
-                    tooltip="分段保存=按顺序批量输出每段图像/音频（接视频保存分配→VHS）；拼接保存=全部生成后拼接成一段再输出。界面入口已移至「视频保存设置」面板"),
-                io.Boolean.Input("auto_save", default=False, display_name="分段视频自动保存", advanced=True,
-                    tooltip="勾选后每段跑完立即用 ffmpeg 把该段落盘 mp4 到「自动保存路径」（不依赖下游 VHS）"),
-                io.String.Input("auto_save_path", default="", display_name="自动保存路径", advanced=True,
-                    placeholder="D:/output/segments",
-                    tooltip="分段视频自动保存的落盘目录（每段生成 `segment_NN.mp4`）"),
-                io.Boolean.Input("auto_merge", default=False, display_name="分段视频自动合并", advanced=True,
-                    tooltip="勾选后把 ffmpeg 落盘的各段 mp4 按顺序拼接为完整一个视频到「合并输出路径」（无论保存模式；未开自动保存时内部临时落盘）"),
-                io.String.Input("auto_merge_path", default="", display_name="合并输出路径", advanced=True,
-                    placeholder="D:/output/merged.mp4",
-                    tooltip="分段视频自动合并的完整输出文件路径（mp4）"),
-                io.Boolean.Input("auto_merge_delete", default=False, display_name="合并后删除分段视频", advanced=True,
-                    tooltip="合并完成后删除各分段 mp4（仅保留合并结果；未开自动保存时的临时分段本就会清理）"),
                 # ③提示词：剧本处理器参数（主界面显示）
                 io.Combo.Input("story_style", options=story_styles, default=story_styles[0],
                     display_name="故事风格", tooltip="故事风格（剧本处理器按此风格拆解与润色）"),
@@ -1890,7 +1881,7 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
                 return f"random@{time.time_ns()}"
             # 固定种子时：生成相关输入变化也必须触发重跑（否则改段数/模式/风格/画幅/提示词被缓存跳过 =「生成视频数量失效」）
             gen_keys = ["run_mode", "video_count", "story_style", "duration",
-                        "aspect_ratio", "megapixels", "scale_factor", "upscale_scale", "save_mode",
+                        "aspect_ratio", "megapixels", "scale_factor", "upscale_scale",
                         "internal_prompt"]
             gen_sig = {k: kwargs.get(k) for k in gen_keys}
             return f"{cfg}|{gen_sig}"
@@ -1900,9 +1891,7 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
     @classmethod
     def execute(cls, run_mode="拆解故事模式", video_count=6, aspect_ratio="16:9 (Widescreen)",
                 megapixels=1.0, duration=8, scale_factor=1.0, upscale_scale=1.5, display_info="",
-                story_style="热血战斗", story_name="", save_mode="分段保存",
-                auto_save=False, auto_save_path="", auto_merge=False, auto_merge_path="",
-                auto_merge_delete=False,
+                story_style="热血战斗", story_name="",
                 internal_prompt=None, manager_settings="",
                 clip=None, vae=None, audio_vae=None, model=None) -> io.NodeOutput:
         run_mode = (run_mode or "故事拆解模式").strip()
@@ -1927,6 +1916,12 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
         enhance = manager.get("enhance") or {}
         assets_cfg = manager.get("assets") or {}
         sample_decode = manager.get("sample_decode") or {}
+        # 视频保存配置（存 manager_settings.save：保存模式/分段自动保存/自动合并/合并后删除）
+        _save_cfg = manager.get("save") or {}
+        save_mode = (_save_cfg.get("mode") or "分段保存").strip() or "分段保存"
+        auto_save = bool(_save_cfg.get("auto_save"))
+        auto_merge = bool(_save_cfg.get("auto_merge"))
+        auto_merge_delete = bool(_save_cfg.get("auto_merge_delete"))
         # 输出语言（在「剧本拆解配置」面板最顶「输出语言」分类中配置，存 manager_settings）
         prompt_lang = (enhance.get("prompt_lang") or "中文 [ZH]").strip() or "中文 [ZH]"
 
@@ -2053,9 +2048,6 @@ class JZL_MiniMaxAssetManager(io.ComfyNode):
 
         bus_items = []
         saved_segments = []
-        auto_save = bool(auto_save)
-        auto_merge = bool(auto_merge)
-        auto_merge_delete = bool(auto_merge_delete)
         # 保存/合并路径固定为运行中 ComfyUI 的 output/jzl（运行时可推导，不写死盘符，不可修改）
         _out_root = os.path.abspath(folder_paths.get_output_directory())
         _jzl_dir = os.path.join(_out_root, "jzl")
