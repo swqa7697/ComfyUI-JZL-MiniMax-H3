@@ -779,6 +779,24 @@ function notify(msg, type = "success") {
     console.log(`[JZL Asset] ${msg}`);
 }
 
+// 通用 modal 确认框（与 buildModal 同风格，非浏览器原生 confirm）：点击确认后执行 onOk
+function confirmClearAssets(onOk) {
+    const overlay = el("div", "position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:10050;display:flex;align-items:center;justify-content:center;");
+    const box = el("div", "background:#1c1c1e;border:1px solid #333;border-radius:8px;width:360px;max-width:90vw;box-shadow:0 20px 40px rgba(0,0,0,0.6);padding:20px;box-sizing:border-box;");
+    box.append(el("div", "font-size:15px;font-weight:700;color:#eee;margin-bottom:10px;", "🗑 清除全部素材"));
+    box.append(el("div", "font-size:13px;color:#ddd;line-height:1.7;margin-bottom:18px;white-space:pre-line;", "确定要一键清除所有已添加的素材吗？\n（图片 / 视频 / 音频全部清空，此操作不可撤销！）"));
+    const row = el("div", "display:flex;justify-content:flex-end;gap:10px;");
+    const cancelBtn = el("button", "background:transparent;border:1px solid var(--border-color,#555);color:#fff;border-radius:4px;padding:7px 18px;font-size:13px;cursor:pointer;", "取消");
+    const okBtn = el("button", "background:#7a2a2a;color:#fff;border:none;border-radius:4px;padding:7px 18px;font-size:13px;font-weight:600;cursor:pointer;", "🗑 确认清除");
+    cancelBtn.addEventListener("click", () => overlay.remove());
+    okBtn.addEventListener("click", () => { overlay.remove(); onOk && onOk(); });
+    row.append(cancelBtn, okBtn);
+    box.append(row);
+    overlay.append(box);
+    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.append(overlay);
+}
+
 // ── 🔄 重拍模式：底部折叠区（类似 MiniMax-H3 导演台「全局提示词 & 参考素材」）──
 // 展开后锁定上方主提示词；结构：提示词选择(加载最后一次LLM拆解/增强) + 段号输入(1~99 对应每段) +
 // 提示词显示窗(可二度修改)。运行仅用当前段提示词生成一段视频（穿透模式单段）。
@@ -2729,6 +2747,7 @@ function buildModal(node, data, panelId) {
                 renderAssetsTools(panelBox, settings, buildAssets, node);
                 renderAssetsPanel(panelBox, settings, d.mode);
             };
+            panelBox.__jzlBuild = buildAssets;  // 供底部「清除」按钮清空后重渲染资产面板
             buildAssets();
             break;
         }
@@ -2754,6 +2773,21 @@ function buildModal(node, data, panelId) {
     autoSaveCb.addEventListener("change", () => { settings.auto_save = autoSaveCb.checked; });
     autoSaveRow.append(autoSaveCb, el("span", "", "自动保存"));
     footer.append(autoSaveRow, cancelBtn, saveBtn);
+    // 「清除」按钮（仅参考素材管理面板显示）：一键清空所有素材，需二次弹窗确认
+    if (panelId === "assets") {
+        const clearBtn = el("button", "background:#7a2a2a;color:#ffd0d0;border:1px solid #a44;border-radius:4px;padding:8px 18px;font-size:14px;font-weight:600;cursor:pointer;", "🗑 清除");
+        clearBtn.title = "一键清除所有已添加的素材（图片/视频/音频），需二次确认";
+        clearBtn.addEventListener("click", () => {
+            confirmClearAssets(async () => {
+                settings.assets = { images: [], videos: [], audios: [] };
+                if (node) node.__jzlAssets = { images: [], videos: [], audios: [] };
+                try { panelBox.__jzlBuild?.(); } catch (_) {}   // 重渲染资产面板（清空后的空列表）
+                await doSave(true, true);                       // 静默保存 + 刷新资产窗/提示词着色
+                notify("🧹 已清除全部素材", "success");
+            });
+        });
+        footer.insertBefore(clearBtn, cancelBtn);
+    }
     dialog.append(error, footer);
     if (panelId === "help") { saveBtn.style.display = "none"; autoSaveRow.style.display = "none"; }  // 使用说明面板无需保存/自动保存
 
