@@ -6,6 +6,16 @@
 """
 
 import os
+# ── 云机多段生成显存碎片抑制（须早于任何 CUDA 分配执行才生效）──
+# NVIDIA(CUDA) 构建且外部未显式配置时启用 expandable_segments，缓解缓存分配器碎片
+# 导致的 CUDA error: invalid argument / 分配失败（本地 ROCm 构建不适用，自动跳过）。
+try:
+    if os.environ.get("PYTORCH_CUDA_ALLOC_CONF") is None:
+        import torch as _jzl_t
+        if getattr(_jzl_t.version, "hip", None) is None:
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+except Exception:
+    pass
 
 from server import PromptServer
 from aiohttp import web
@@ -40,8 +50,10 @@ from .nodes_ref2va_bus import JZL_MiniMaxH3Ref2vaBusOut, JZL_MiniMaxH3Ref2vaBusI
 from .nodes_prompt_enhancer import JZL_MiniMaxPromptEnhancer
 from .nodes_asset_manager import (
     JZL_MiniMaxAssetManager,
+    JZL_MiniMaxAssetManagerMax,
     JZL_MiniMaxAssetManagerMini,
     JZL_MiniMaxVideoSaveDistributor,
+    JZL_MiniMaxVideoViewer,
     _read_asset_settings,
     _write_asset_settings,
     _read_manager_settings,
@@ -84,8 +96,10 @@ NODE_CLASS_MAPPINGS = {
     "JZL_MiniMaxH3Ref2vaBusIn": JZL_MiniMaxH3Ref2vaBusIn,
     "JZL_MiniMaxPromptEnhancer": JZL_MiniMaxPromptEnhancer,
     "JZL_MiniMaxAssetManager": JZL_MiniMaxAssetManager,
+    "JZL_MiniMaxAssetManagerMax": JZL_MiniMaxAssetManagerMax,
     "JZL_MiniMaxAssetManagerMini": JZL_MiniMaxAssetManagerMini,
     "JZL_MiniMaxVideoSaveDistributor": JZL_MiniMaxVideoSaveDistributor,
+    "JZL_MiniMaxVideoViewer": JZL_MiniMaxVideoViewer,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -119,8 +133,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "JZL_MiniMaxH3Ref2vaBusIn": "JZL - 🔗 MiniMax H3 ref2va参考总线（解包）",
     "JZL_MiniMaxPromptEnhancer": "JZL - ✨ 提示词增强",
     "JZL_MiniMaxAssetManager": "JZL - 🤖 MiniMax-H3短剧导演台Pro",
+    "JZL_MiniMaxAssetManagerMax": "JZL - 🤖 MiniMax-H3短剧导演台Max",
     "JZL_MiniMaxAssetManagerMini": "JZL - 🤖 MiniMax-H3短剧导演台Mini",
     "JZL_MiniMaxVideoSaveDistributor": "JZL - 💾 视频保存分配",
+    "JZL_MiniMaxVideoViewer": "JZL - 🎬 生成视频查看器",
 }
 
 
@@ -345,6 +361,140 @@ async def jzl_video_preview(request):
         return web.FileResponse(path)
     except Exception as exc:
         return web.json_response({"error": f"视频读取失败：{exc}"}, status=500)
+
+
+@PromptServer.instance.routes.get("/jzl/generated_videos")
+async def jzl_generated_videos(request):
+    """生成视频管理：列出 output/jzl/{故事名}/ 下全部 mp4。
+
+    传 story_name → 返回该故事名下视频列表；不传 → 返回 jzl 下所有含视频的故事文件夹。
+    （Max 节点「🎬 生成视频管理」面板读取同一目录：落盘目录 = output/jzl/{故事名}/）
+    """
+    try:
+        import folder_paths
+        out_root = os.path.abspath(folder_paths.get_output_directory())
+        jzl_dir = os.path.join(out_root, "jzl")
+        story_name = (request.query.get("story_name") or "").strip()
+        if not story_name:
+            # 无故事名 → 列出 jzl 下所有含 mp4 的故事文件夹（供下拉选择）
+            stories = []
+            if os.path.isdir(jzl_dir):
+                for d in sorted(os.listdir(jzl_dir)):
+                    dp = os.path.join(jzl_dir, d)
+                    if not os.path.isdir(dp):
+                        continue
+                    n = sum(1 for f in os.listdir(dp) if f.lower().endswith(".mp4"))
+                    if n:
+                        stories.append({"story": d, "count": n})
+            return web.json_response({"ok": True, "stories": stories})
+        safe = _safe_story_name(story_name)
+        d = os.path.join(jzl_dir, safe)
+        videos = []
+        if os.path.isdir(d):
+            for fn in os.listdir(d):
+                fp = os.path.join(d, fn)
+                if fn.lower().endswith(".mp4") and os.path.isfile(fp):
+                    try:
+                        mtime = os.path.getmtime(fp)
+                    except Exception:
+                        mtime = 0
+                    videos.append({
+                        "name": fn,
+                        "path": fp,  # 绝对路径（video_preview/video_thumb 可直接用）
+                        "mtime": mtime,
+                        "size": os.path.getsize(fp) if os.path.isfile(fp) else 0,
+                    })
+        # 最新生成的排前面
+        videos.sort(key=lambda v: v["mtime"], reverse=True)
+        return web.json_response({"ok": True, "story": safe, "videos": videos})
+    except Exception as exc:
+        return web.json_response({"error": f"视频列表失败：{exc}"}, status=500)
+
+
+@PromptServer.instance.routes.get("/jzl/story_latest_script")
+async def jzl_story_latest_script(request):
+    """读取 {故事名} 最后一次生成的「故事拆解」文件夹内文件，返回内容（供「生成视频查看器」复制/编辑剧本）。
+
+    目录结构：output/jzl/{故事名}/第NNNNN次生成/故事拆解/*.txt（短剧导演台Max 每批次拆解/增强都会写入）。
+    取编号最大的「第N次生成」批次 → 其「故事拆解」目录内文件（优先「生成故事拆解」，否则最新）。
+    """
+    try:
+        import folder_paths
+        out_root = os.path.abspath(folder_paths.get_output_directory())
+    except Exception:
+        return web.json_response({"ok": False, "error": "无法定位 output 目录"}, status=500)
+    story_name = (request.query.get("story_name") or "").strip()
+    if not story_name:
+        return web.json_response({"ok": False, "error": "缺少 story_name"}, status=400)
+    safe = _safe_story_name(story_name)
+    story_dir = os.path.join(out_root, "jzl", safe)
+    if not os.path.isdir(story_dir):
+        return web.json_response({"ok": True, "story": safe, "script": "", "batch": None, "file": None})
+    # 找编号最大的「第N次生成」批次目录
+    batches = []
+    for _dn in os.listdir(story_dir):
+        _dp = os.path.join(story_dir, _dn)
+        if os.path.isdir(_dp) and _dn.startswith("第") and _dn.endswith("次生成"):
+            try:
+                batches.append((int(_dn[1:-len("次生成")]), _dp))
+            except Exception:
+                pass
+    if not batches:
+        return web.json_response({"ok": True, "story": safe, "script": "", "batch": None, "file": None})
+    batches.sort(key=lambda x: x[0])
+    _batch_no, latest_dir = batches[-1]
+    script = ""
+    picked = None
+    story_dir2 = os.path.join(latest_dir, "故事拆解")
+    if os.path.isdir(story_dir2):
+        files = []
+        for _fn in os.listdir(story_dir2):
+            _fp = os.path.join(story_dir2, _fn)
+            if os.path.isfile(_fp) and (_fn.lower().endswith(".txt") or _fn.lower().endswith(".md")):
+                try:
+                    files.append((os.path.getmtime(_fp), _fp, _fn))
+                except Exception:
+                    pass
+        if files:
+            files.sort(key=lambda x: x[0], reverse=True)
+            for _mt, _fp, _fn in files:  # 优先「生成故事拆解」
+                if "生成故事拆解" in _fn:
+                    picked = _fn
+                    with open(_fp, "r", encoding="utf-8-sig") as _f:
+                        script = _f.read()
+                    break
+            if picked is None:  # 否则最新文件
+                _mt, _fp, picked = files[0]
+                with open(_fp, "r", encoding="utf-8-sig") as _f:
+                    script = _f.read()
+    return web.json_response({"ok": True, "story": safe, "script": script, "batch": _batch_no, "file": picked})
+
+
+@PromptServer.instance.routes.get("/jzl/video_thumb")
+async def jzl_video_thumb(request):
+    """生成视频管理缩略图：用 ffmpeg 抽 mp4 首帧返回 JPEG（供多宫格展示）。"""
+    path = (request.query.get("path") or "").strip()
+    if not path:
+        return web.json_response({"error": "缺少 path"}, status=400)
+    if not (str(path).lower().endswith(".mp4") and os.path.isfile(path)):
+        return web.json_response({"error": "文件不存在或非 mp4"}, status=404)
+    try:
+        import io
+        import imageio_ffmpeg
+        import subprocess
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        proc = subprocess.Popen(
+            [ffmpeg, "-y", "-ss", "0", "-i", path,
+             "-frames:v", "1", "-vf", "scale=min(256\\,iw):-2",
+             "-f", "image2pipe", "-vcodec", "mjpeg", "-"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        data = proc.stdout.read()
+        proc.wait(timeout=30)
+        if not data:
+            return web.json_response({"error": "抽帧失败"}, status=500)
+        return web.Response(body=data, content_type="image/jpeg")
+    except Exception as exc:
+        return web.json_response({"error": f"缩略图失败：{exc}"}, status=500)
 
 
 @PromptServer.instance.routes.get("/jzl/manager")

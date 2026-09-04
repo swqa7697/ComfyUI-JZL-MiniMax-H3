@@ -632,6 +632,36 @@
       "audio_vae": { "name": "Audio VAE" }
     }
   },
+  "JZL_MiniMaxAssetManagerMax": {
+    "display_name": "JZL - 🤖 MiniMax-H3 Short Drama Director Max",
+    "inputs": {
+      "run_mode": { "name": "Run Mode" },
+      "aspect_ratio": { "name": "Aspect Ratio" },
+      "megapixels": { "name": "Megapixels (MP)" },
+      "duration": { "name": "Duration per Video" },
+      "scale_factor": { "name": "Reference Scale" },
+      "upscale_scale": { "name": "Upscale Scale" },
+      "video_count": { "name": "Video Count" },
+      "story_style": { "name": "Story Style" },
+      "story_name": { "name": "Story Name" },
+      "model": { "name": "Model" },
+      "clip": { "name": "CLIP" },
+      "vae": { "name": "VAE" },
+      "audio_vae": { "name": "Audio VAE" }
+    },
+    "outputs": {
+      "0": { "name": "Processed Script" }
+    }
+  },
+  "JZL_MiniMaxVideoViewer": {
+    "display_name": "JZL - 🎬 Generated Video Viewer",
+    "inputs": {
+      "story_name": { "name": "Current Story" }
+    },
+    "outputs": {
+      "0": { "name": "Video Files" }
+    }
+  },
   "JZL_MiniMaxAssetManagerMini": {
     "display_name": "JZL - 🤖 MiniMax-H3 Short Drama Director Mini",
     "inputs": {
